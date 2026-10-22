@@ -13,7 +13,7 @@ import { GET } from "./route";
 import { GET as subscriptions, POST as subscribe } from "../webhooks/route";
 import { DELETE, PATCH } from "../webhooks/[id]/route";
 import { decodeEventCursor, encodeEventCursor } from "@/lib/agent-api/events";
-import { decryptSigningSecret } from "@/lib/webhooks/sign";
+import { decryptSigningSecret, sign, verify } from "@/lib/webhooks/sign";
 
 function request(path = "/events", method = "GET", body?: unknown, key = true) {
   return new NextRequest(`http://localhost/api/v1${path}`, { method,
@@ -57,7 +57,7 @@ describe("events endpoint", () => {
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(db.agentEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: "tenant-a", txid: { lt: BigInt("1000") } } }));
-    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false }, "read");
+    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false, burstUntil: null }, "read");
     expect(db.agentAuditEvent.create).toHaveBeenCalled();
     expect(decodeEventCursor((await response.json()).cursor)?.id).toBe(event.id);
   });
@@ -97,6 +97,33 @@ describe("events endpoint", () => {
     db.agentEvent.findMany.mockRejectedValueOnce(new Error("DB"));
     expect((await GET(request())).status).toBe(503);
     expect(encodeEventCursor({ createdAt: event.createdAt, id: event.id })).toBeTruthy();
+  });
+
+  it("filters by type, project and issue, combined with the global cursor (#602)", async () => {
+    const cursor = encodeEventCursor({ txid: event.txid, id: event.id });
+    db.agentEvent.findMany.mockResolvedValue([{ ...event, id: "event-b" }]);
+    const response = await GET(request(`/events?types=comment.created,claim.*&projectId=proj-1&bugId=issue-a&after=${cursor}`));
+    expect(response.status).toBe(200);
+    expect(db.agentEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      tenantId: "tenant-a", projectId: "proj-1", bugId: "issue-a",
+      AND: [{ OR: [{ type: { in: ["comment.created"] } }, { type: { startsWith: "claim." } }] }],
+      txid: { lt: BigInt("1000") }, OR: [{ txid: { gt: event.txid } }, { txid: event.txid, id: { gt: event.id } }],
+    } }));
+    expect(decodeEventCursor((await response.json()).cursor)?.id).toBe("event-b");
+    await GET(request("/events?projectId=proj-1"));
+    expect(db.agentEvent.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { tenantId: "tenant-a", projectId: "proj-1", txid: { lt: BigInt("1000") } } }));
+  });
+
+  it("returns 400 listing the valid types for an unknown type (#602)", async () => {
+    const response = await GET(request("/events?types=comment.created,issue.nope"));
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("issue.nope");
+    expect(body.validTypes).toContain("comment.created");
+    for (const query of ["types=", "types=nope.*", "projectId=", "bugId="]) {
+      expect((await GET(request(`/events?${query}`))).status, query).toBe(400);
+    }
+    expect(db.agentEvent.findMany).not.toHaveBeenCalled();
   });
 
   it("ends a long poll at its deadline without losing the existing cursor", async () => {
@@ -175,8 +202,34 @@ describe("webhook subscription endpoints", () => {
     const stored = db.webhookSubscription.update.mock.calls[0][0].data.signingSecretEncrypted;
     expect(stored).not.toBe(rawSecret);
     expect(decryptSigningSecret(stored)).toBe(rawSecret);
-    // Rotating replaces only the secret: the subscription keeps its state.
-    expect(db.webhookSubscription.update.mock.calls[0][0].data).toEqual({ signingSecretEncrypted: stored });
+    // #643: rotating also clears the failures and re-enables the subscription,
+    // keeping the same id.
+    expect(db.webhookSubscription.update.mock.calls[0][0]).toMatchObject({
+      where: { id: "subscription-a" },
+      data: { signingSecretEncrypted: stored, enabled: true, disabledAt: null, failureCount: 0 },
+    });
+  });
+
+  it("makes the old secret stop verifying and keeps the raw secret out of the audit log (#643)", async () => {
+    const first = await (await PATCH(request("/webhooks/id", "PATCH", { rotateSecret: true }), context)).json();
+    const second = await (await PATCH(request("/webhooks/id", "PATCH", { rotateSecret: true }), context)).json();
+    const oldSecret = first.subscription.signingSecret as string;
+    const newSecret = second.subscription.signingSecret as string;
+    expect(newSecret).not.toBe(oldSecret);
+
+    // A delivery signed now uses the stored (new) secret.
+    const stored = db.webhookSubscription.update.mock.calls[1][0].data.signingSecretEncrypted;
+    const timestampMs = Date.now();
+    const rawBody = JSON.stringify({ type: "issue.created" });
+    const signature = sign({ rawSecret: decryptSigningSecret(stored), timestampMs, rawBody });
+    expect(verify({ rawSecret: newSecret, signature, timestampMs, rawBody })).toBe(true);
+    expect(verify({ rawSecret: oldSecret, signature, timestampMs, rawBody })).toBe(false);
+
+    // The audit rows record the action and status, never the secret.
+    const audited = JSON.stringify(db.agentAuditEvent.create.mock.calls);
+    expect(audited).toContain("webhooks.rotateSecret");
+    expect(audited).not.toContain(oldSecret);
+    expect(audited).not.toContain(newSecret);
   });
 
   it("re-enables without rotating when no rotation is asked for", async () => {

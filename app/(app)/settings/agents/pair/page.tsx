@@ -56,7 +56,7 @@ export default async function PairAgentPage({
         ) : (
           <PairForm
             initialCode={initialCode}
-            pending={pending ? { name: pending.proposedName, model: pending.proposedModel } : null}
+            pending={pending ? { name: pending.proposedName, model: pending.proposedModel, level: pending.proposedLevel } : null}
             unknownCode={Boolean(initialCode) && !pending}
             projects={context.projects}
             activeProjectId={context.activeProjectId}

@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import type { AgentContext } from "@/lib/agents/require-agent";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { writeInbox } from "@/lib/agent-api/inbox";
+import { eventStreamBus } from "@/lib/events/stream-bus";
 
 /**
  * Agent event feed (#445).
@@ -41,13 +43,19 @@ export function nextPollDelayMs(attempt: number, maxMs = EVENT_MAX_POLL_INTERVAL
  * publisher cannot drift from the documentation.
  */
 export const AGENT_EVENT_TYPES = [
+  "approval.granted",
+  "approval.requested",
   "claim.accepted",
+  "claim.extended",
   "claim.offered",
   "claim.released",
   "comment.created",
   "comment.deleted",
   "comment.edited",
   "github.merge_failed",
+  "goal.created",
+  "goal.split",
+  "goal.updated",
   "issue.accepted",
   "issue.bid",
   "issue.bid_awarded",
@@ -56,11 +64,15 @@ export const AGENT_EVENT_TYPES = [
   "issue.created",
   "issue.deleted",
   "issue.interest",
+  "issue.pr_linked",
   "issue.restored",
   "issue.structured",
   "issue.test_verdict",
   "issue.updated",
   "issue.validated",
+  "job.created",
+  "job.review.requested",
+  "job.submission.reviewed",
   "question.answered",
   "question.asked",
   "redesign.proposed",
@@ -110,6 +122,21 @@ export async function publish(
     data: subscriptions.map(({ id }) => ({ subscriptionId: id, eventId: event.id, nextAttemptAt: new Date() })),
     skipDuplicates: true,
   });
+  // #601: what this event addresses to one agent goes to its inbox too.
+  await writeInbox(db, { id: event.id, ...params });
+  try {
+    eventStreamBus.broadcast({
+      id: event.id,
+      type: params.type,
+      payload: params.payload as unknown,
+      actorAgentId: params.actorAgentId ?? null,
+      bugId: params.bugId ?? null,
+      tenantId: params.tenantId,
+      createdAt: new Date(),
+    });
+  } catch {
+    // Ignore broadcast failures to not block publishing
+  }
   return event;
 }
 
@@ -197,6 +224,69 @@ export function parseEventCursor(
 }
 
 // ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional narrowing of the feed (#602). The cursor stays global, so a
+ * filtered poll can resume from (or hand over) the same cursor as an
+ * unfiltered one.
+ */
+export type EventFilters = {
+  /** Exact event types. */
+  types?: string[];
+  /** Type prefixes from `claim.*` entries, stored as `claim.`. */
+  typePrefixes?: string[];
+  projectId?: string;
+  bugId?: string;
+};
+
+export type EventFilterError = { error: string; validTypes?: readonly string[] };
+
+function validId(value: string): boolean {
+  return value.trim() !== "" && value.length <= 191;
+}
+
+/**
+ * Parse `?types=&projectId=&bugId=`. `types` is a comma list of event types
+ * or `prefix.*` patterns; an unknown entry is an error that lists the valid
+ * types so the caller can return a 400.
+ */
+export function parseEventFilters(params: URLSearchParams): EventFilters | EventFilterError {
+  const filters: EventFilters = {};
+
+  const typesRaw = params.get("types");
+  if (typesRaw !== null) {
+    const entries = [...new Set(typesRaw.split(",").map((t) => t.trim()).filter(Boolean))];
+    if (!entries.length) return { error: "types must list at least one event type.", validTypes: AGENT_EVENT_TYPES };
+    const known = new Set<string>(AGENT_EVENT_TYPES);
+    const types: string[] = [];
+    const typePrefixes: string[] = [];
+    const unknown: string[] = [];
+    for (const entry of entries) {
+      if (known.has(entry)) types.push(entry);
+      else if (entry.endsWith(".*") && entry.length > 2 && AGENT_EVENT_TYPES.some((t) => t.startsWith(entry.slice(0, -1)))) {
+        typePrefixes.push(entry.slice(0, -1));
+      } else unknown.push(entry);
+    }
+    if (unknown.length) {
+      return { error: `Unknown event type: ${unknown.slice(0, 10).join(", ").slice(0, 300)}.`, validTypes: AGENT_EVENT_TYPES };
+    }
+    if (types.length) filters.types = types;
+    if (typePrefixes.length) filters.typePrefixes = typePrefixes;
+  }
+
+  for (const key of ["projectId", "bugId"] as const) {
+    const value = params.get(key);
+    if (value === null) continue;
+    if (!validId(value)) return { error: `Invalid ${key}.` };
+    filters[key] = value;
+  }
+
+  return filters;
+}
+
+// ---------------------------------------------------------------------------
 // List
 // ---------------------------------------------------------------------------
 
@@ -255,13 +345,23 @@ function afterCursor(cursor: EventCursor): Prisma.AgentEventWhereInput {
  * order (oldest first). Reads 101 rows so the route can detect another page.
  * Events from transactions that may still be running are held back until
  * they settle, so a cursor never moves past an event that is about to appear.
+ * `filters` narrow the result; the `(tenantId, projectId|bugId, txid, id)`
+ * indexes keep project and issue polls off the tenant-wide scan (#602).
  */
 export async function listEvents(
   agent: Pick<AgentContext, "tenantId">,
   cursor: EventCursor | null,
+  filters: EventFilters = {},
 ): Promise<AgentEventRow[]> {
+  const typeMatches: Prisma.AgentEventWhereInput[] = [
+    ...(filters.types?.length ? [{ type: { in: filters.types } }] : []),
+    ...(filters.typePrefixes ?? []).map((prefix) => ({ type: { startsWith: prefix } })),
+  ];
   const where: Prisma.AgentEventWhereInput = {
     tenantId: agent.tenantId,
+    ...(filters.projectId ? { projectId: filters.projectId } : {}),
+    ...(filters.bugId ? { bugId: filters.bugId } : {}),
+    ...(typeMatches.length ? { AND: [typeMatches.length === 1 ? typeMatches[0]! : { OR: typeMatches }] } : {}),
     txid: { lt: await settledBefore() },
     ...(cursor ? afterCursor(cursor) : {}),
   };
@@ -283,13 +383,14 @@ export async function pollEvents(
   agent: Pick<AgentContext, "tenantId">,
   cursor: EventCursor | null,
   waitSeconds: number,
+  filters: EventFilters = {},
   pollIntervalMs = EVENT_POLL_INTERVAL_MS,
 ): Promise<AgentEventRow[]> {
   const wait = Number.isFinite(waitSeconds) ? Math.max(0, Math.min(waitSeconds, EVENT_MAX_WAIT_SECONDS)) : 0;
   const deadline = Date.now() + wait * 1000;
 
   for (let attempt = 0; ; attempt += 1) {
-    const rows = await listEvents(agent, cursor);
+    const rows = await listEvents(agent, cursor, filters);
     if (rows.length > 0 || Date.now() >= deadline) return rows;
     // Sleep for one interval, but don't overshoot the deadline.
     const remaining = deadline - Date.now();

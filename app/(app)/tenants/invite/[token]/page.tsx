@@ -29,7 +29,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
     <div className="mx-auto max-w-2xl space-y-6">
       <div className="space-y-1">
         <Link href="/tenants" className="text-sm text-teal-700 hover:underline">
-          ← Your tenants
+          ← Your workspaces
         </Link>
         <h1 className="text-2xl font-semibold text-slate-900">Invite</h1>
       </div>

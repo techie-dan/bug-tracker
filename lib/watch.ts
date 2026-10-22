@@ -27,16 +27,6 @@ export function resolveWatchers(
   return result;
 }
 
-/** Pure: whether one person is watching, given the same inputs. */
-export function isWatchingIssue(
-  userId: string,
-  defaults: readonly (string | null | undefined)[],
-  row: WatchRow | null | undefined,
-): boolean {
-  if (row) return row.watching;
-  return defaults.includes(userId);
-}
-
 type Db = Pick<PrismaClient, "issueWatch"> | Pick<Prisma.TransactionClient, "issueWatch">;
 
 /** Everyone who should hear about an event on this issue. */

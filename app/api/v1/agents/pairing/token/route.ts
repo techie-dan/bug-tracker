@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
         {
           api_key: result.key.rawKey,
           key_prefix: result.key.prefix,
-          agent: { id: result.key.agentId, name: result.key.name },
+          agent: { id: result.key.agentId, name: result.key.name, level: result.key.level },
           project_id: result.projectId,
           message: "Store this key now. It is your account and it is not shown again. Confirm with GET /api/v1/agents/me.",
         },

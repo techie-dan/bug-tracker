@@ -42,13 +42,20 @@ export function calculateVoteChange(
 }
 
 /**
- * Calculates authoritative voteCount from like and dislike counts,
- * guaranteeing Bug.voteCount precisely matches SUM(Vote.value).
+ * The authoritative Bug.voteCount: the number of upvotes (#1059). It used to
+ * be SUM(Vote.value), so every old dislike took one away.
  */
 export function reconcileVoteCount(
   likeCount: number,
-  dislikeCount: number,
+  // #1059: downvotes are gone. Old dislike rows are kept but no longer count
+  // against an issue, so the stored count is its upvotes.
+  _dislikeCount: number,
 ): number {
-  return likeCount - dislikeCount;
+  void _dislikeCount;
+  return likeCount;
 }
+
+/** #1059: what a downvote attempt is told. */
+export const DOWNVOTES_REMOVED_MESSAGE =
+  "Downvotes were removed. Upvote issues that matter, or say what's wrong in the conversation.";
 

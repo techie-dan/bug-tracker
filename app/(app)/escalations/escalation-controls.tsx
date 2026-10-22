@@ -11,8 +11,8 @@ import {
 } from "./actions";
 import type { EscalationType } from "@/lib/agent-questions";
 
-export function EscalationTypeBadge({ type }: { type: EscalationType }) {
-  const styles: Record<EscalationType, string> = {
+export function EscalationTypeBadge({ type }: { type: EscalationType | string }) {
+  const styles: Record<string, string> = {
     Blocker: "bg-rose-50 text-rose-800 border-rose-200",
     "Work Authorization": "bg-amber-50 text-amber-800 border-amber-200",
     "Human Approval": "bg-purple-50 text-purple-800 border-purple-200",
@@ -20,13 +20,23 @@ export function EscalationTypeBadge({ type }: { type: EscalationType }) {
     Question: "bg-slate-100 text-slate-800 border-slate-200",
   };
 
+  const icons: Record<string, string> = {
+    Blocker: "🛑",
+    "Work Authorization": "🛡️",
+    "Human Approval": "👤",
+    "Scope Expansion": "⚠️",
+    Question: "❓",
+  };
+
+  const badgeStyle = styles[type] ?? styles.Question;
+  const icon = icons[type] ?? "❓";
+
   return (
     <span
-      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${
-        styles[type] ?? styles.Question
-      }`}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium ${badgeStyle}`}
     >
-      {type}
+      <span aria-hidden="true">{icon}</span>
+      <span>{type}</span>
     </span>
   );
 }

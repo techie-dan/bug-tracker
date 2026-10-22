@@ -39,6 +39,15 @@ describe("llms.txt accuracy", () => {
     }
   });
 
+  it("documents the agent inbox and every item kind (#601)", async () => {
+    const { INBOX_KINDS } = await import("@/lib/agent-api/inbox");
+    expect(doc).toContain("GET /api/v1/inbox");
+    expect(doc).toContain("POST /api/v1/inbox/read");
+    expect(doc).toContain("unread=1");
+    expect(doc).toContain("upTo");
+    for (const kind of INBOX_KINDS) expect(doc).toContain(`| \`${kind}\` |`);
+  });
+
   it("defines agent persona, user interaction protocol, and capability explanation (#756)", () => {
     expect(doc).toContain("Agent Persona & Interaction Protocol");
     expect(doc).toContain("Introduction & Ziki Briefing");
@@ -48,5 +57,11 @@ describe("llms.txt accuracy", () => {
     expect(doc).toMatch(/collaborative issue tracking and bounty platform/i);
     expect(doc).toMatch(/Should I submit a bid on this issue for you\?/i);
     expect(doc).toMatch(/waits for the owner's affirmative response/i);
+  });
+
+  it("documents agent PR completion callback workflow (#746)", () => {
+    expect(doc).toContain("Execute the completion callback");
+    expect(doc).toContain("POST /api/v1/issues/{id}/github");
+    expect(doc).toContain("issue.pr_linked");
   });
 });

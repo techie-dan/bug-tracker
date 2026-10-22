@@ -1,18 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  SoleTenantOwnerError,
   UserHasReportedBugsError,
+  deleteUserAccount,
   offboardUser,
 } from "./user-offboarding";
 
-describe("user offboarding (#356)", () => {
+describe("user offboarding (#356, #571)", () => {
   const mockClient = {
     user: {
       findUnique: vi.fn(),
+      create: vi.fn(),
       delete: vi.fn(),
     },
     bug: {
       updateMany: vi.fn(),
       count: vi.fn(),
+    },
+    comment: {
+      updateMany: vi.fn(),
+    },
+    bugActivity: {
+      updateMany: vi.fn(),
+    },
+    membership: {
+      findMany: vi.fn(),
+      count: vi.fn(),
+      deleteMany: vi.fn(),
+    },
+    agent: {
+      findMany: vi.fn(),
+      update: vi.fn(),
+    },
+    agentApiKey: {
+      updateMany: vi.fn(),
     },
   };
 
@@ -153,5 +174,91 @@ describe("user offboarding (#356)", () => {
     expect(clientWithTx.$transaction).toHaveBeenCalledOnce();
     expect(result.ok).toBe(true);
     expect(result.userId).toBe("user-tx");
+  });
+
+  describe("deleteUserAccount (#571)", () => {
+    it("refuses deletion while user is the sole owner of an organization", async () => {
+      mockClient.user.findUnique.mockResolvedValue({ id: "sole-owner" });
+      mockClient.membership.findMany.mockResolvedValue([
+        { tenantId: "tenant-solo", role: "owner", tenant: { id: "tenant-solo", name: "Solo Workspace" } },
+      ]);
+      mockClient.membership.count.mockResolvedValue(1);
+
+      await expect(
+        deleteUserAccount(mockClient as never, "sole-owner"),
+      ).rejects.toThrow(SoleTenantOwnerError);
+
+      expect(mockClient.agent.update).not.toHaveBeenCalled();
+      expect(mockClient.membership.deleteMany).not.toHaveBeenCalled();
+      expect(mockClient.user.delete).not.toHaveBeenCalled();
+    });
+
+    it("allows deletion when organization has other owners, revokes agents/keys, removes memberships and anonymises content", async () => {
+      mockClient.user.findUnique
+        .mockResolvedValueOnce({ id: "user-retiring" }) // deleteUserAccount user lookup
+        .mockResolvedValueOnce({ id: "user-retiring" }) // runOffboard user lookup
+        .mockResolvedValueOnce({ id: "anon-user" }) // getOrCreateAnonymizedUser lookup
+        .mockResolvedValueOnce({ id: "anon-user" }); // fallback reporter verification
+
+      mockClient.membership.findMany.mockResolvedValue([
+        { tenantId: "tenant-multi", role: "owner", tenant: { id: "tenant-multi", name: "Multi Org" } },
+      ]);
+      mockClient.membership.count.mockResolvedValue(2); // 2 owners, safe to leave!
+
+      mockClient.agent.findMany.mockResolvedValue([
+        { id: "agent-1", tenantId: "tenant-multi" },
+      ]);
+      mockClient.agent.update.mockResolvedValue({ id: "agent-1" });
+      mockClient.agentApiKey.updateMany.mockResolvedValue({ count: 1 });
+      mockClient.membership.deleteMany.mockResolvedValue({ count: 1 });
+
+      mockClient.bug.count.mockResolvedValue(1);
+      mockClient.bug.updateMany
+        .mockResolvedValueOnce({ count: 1 }) // assignee null
+        .mockResolvedValueOnce({ count: 1 }) // reporterId -> anon
+        .mockResolvedValueOnce({ count: 1 }); // beneficiaryUserId -> anon
+
+      mockClient.comment.updateMany.mockResolvedValue({ count: 2 });
+      mockClient.bugActivity.updateMany.mockResolvedValue({ count: 3 });
+      mockClient.user.delete.mockResolvedValue({ id: "user-retiring" });
+
+      const result = await deleteUserAccount(mockClient as never, "user-retiring");
+
+      expect(result).toEqual({ ok: true, userId: "user-retiring" });
+
+      // Agents and keys revoked
+      expect(mockClient.agent.update).toHaveBeenCalledWith({
+        where: { id: "agent-1" },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(mockClient.agentApiKey.updateMany).toHaveBeenCalledWith({
+        where: { agent: { ownerUserId: "user-retiring" }, revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+
+      // Memberships removed
+      expect(mockClient.membership.deleteMany).toHaveBeenCalledWith({
+        where: { userId: "user-retiring" },
+      });
+
+      // Content anonymised
+      expect(mockClient.bug.updateMany).toHaveBeenCalledWith({
+        where: { reporterId: "user-retiring" },
+        data: { reporterId: "anon-user" },
+      });
+      expect(mockClient.comment.updateMany).toHaveBeenCalledWith({
+        where: { authorId: "user-retiring" },
+        data: { authorId: "anon-user" },
+      });
+      expect(mockClient.bugActivity.updateMany).toHaveBeenCalledWith({
+        where: { actorId: "user-retiring" },
+        data: { actorId: "anon-user" },
+      });
+
+      // User deleted
+      expect(mockClient.user.delete).toHaveBeenCalledWith({
+        where: { id: "user-retiring" },
+      });
+    });
   });
 });

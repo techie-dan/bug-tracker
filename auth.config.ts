@@ -64,6 +64,9 @@ export default {
       if (user?.role) {
         token.role = user.role;
       }
+      if (typeof (user as unknown as { sessionVersion?: number })?.sessionVersion === "number") {
+        token.sv = (user as unknown as { sessionVersion?: number }).sessionVersion;
+      }
       if (isSuperAdminEmail(token.email as string | undefined)) {
         token.role = "super_admin";
       }

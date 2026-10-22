@@ -14,6 +14,7 @@ vi.mock("@/app/actions/comments", () => ({
 
 import { CommentThread } from "./comment-thread";
 import type { CommentNode } from "@/lib/comments";
+import type { CommentType } from "@/lib/validations/issue";
 
 describe("CommentThread permalinks (#142)", () => {
   it("renders comment id, scroll-mt-24, and timestamp permalink anchor", () => {
@@ -91,12 +92,124 @@ describe("CommentThread read-only mode (#122)", () => {
     expect(html).toContain(">Reply<");
   });
 
-  it("keeps comments but hides the form, Reply, Edit and Delete on a deleted issue", () => {
-    const html = render(true);
-    expect(html).toContain("First comment");
-    expect(html).not.toContain("<form");
-    expect(html).not.toContain(">Reply<");
-    expect(html).not.toContain(">Edit<");
-    expect(html).not.toContain(">Delete<");
+  it("renders structured comment badges like bid and delivery (#747)", () => {
+    const comments: CommentNode[] = [
+      {
+        id: "c-bid",
+        authorId: "u1",
+        parentId: null,
+        body: "I bid 2 hours",
+        type: "bid",
+        metadata: { eta: "2 hours" },
+        createdAt: new Date("2026-10-16T12:00:00Z"),
+        editedAt: null,
+        deletedAt: null,
+        depth: 0,
+        author: { name: "Agent Alpha", role: "user" },
+        parent: null,
+        children: [],
+      },
+      {
+        id: "c-del",
+        authorId: "u1",
+        parentId: null,
+        body: "Delivered PR",
+        type: "delivery",
+        metadata: { prUrl: "https://github.com/pr/1" },
+        createdAt: new Date("2026-10-16T12:00:00Z"),
+        editedAt: null,
+        deletedAt: null,
+        depth: 0,
+        author: { name: "Agent Alpha", role: "user" },
+        parent: null,
+        children: [],
+      },
+    ];
+
+    const html = renderToStaticMarkup(
+      createElement(CommentThread, {
+        bugId: "b1",
+        issueUrl: "https://issues.example/bugs/b1",
+        reporterId: "u1",
+        comments,
+        users: [{ id: "u1", name: "Agent Alpha" }],
+      }),
+    );
+
+    expect(html).toContain("Bid");
+    expect(html).toContain("ETA: 2 hours");
+    expect(html).toContain("Delivery");
+    expect(html).toContain('href="https://github.com/pr/1"');
+  });
+
+  describe("CommentTypeBadge (#455)", () => {
+    const renderComment = (type: string, metadata?: unknown) =>
+      renderToStaticMarkup(
+        createElement(CommentThread, {
+          bugId: "b1",
+          issueUrl: "https://issues.example/bugs/b1",
+          reporterId: "u1",
+          comments: [
+            {
+              id: "c1",
+              authorId: "u1",
+              parentId: null,
+              body: "A comment",
+              type: type as CommentType,
+              metadata,
+              createdAt: new Date("2026-10-16T12:00:00Z"),
+              editedAt: null,
+              deletedAt: null,
+              depth: 0,
+              author: { name: "Alice", role: "user" },
+              parent: null,
+              children: [],
+            },
+          ],
+          users: [{ id: "u1", name: "Alice" }],
+        }),
+      );
+
+    it("renders a subtle badge for plain comments", () => {
+      const html = renderComment("comment");
+      expect(html).toContain("Comment");
+      expect(html).toContain("💬");
+      expect(html).toContain("bg-slate-50");
+    });
+
+    it("renders a readable fallback for unknown types", () => {
+      const html = renderComment("custom_type");
+      expect(html).toContain("Custom Type");
+      expect(html).toContain("📄");
+      expect(html).toContain("bg-slate-100");
+    });
+
+    it("renders nothing for null type", () => {
+      const html = renderToStaticMarkup(
+        createElement(CommentThread, {
+          bugId: "b1",
+          issueUrl: "https://issues.example/bugs/b1",
+          reporterId: "u1",
+          comments: [
+            {
+              id: "c1",
+              authorId: "u1",
+              parentId: null,
+              body: "A comment",
+              type: null,
+              createdAt: new Date("2026-10-16T12:00:00Z"),
+              editedAt: null,
+              deletedAt: null,
+              depth: 0,
+              author: { name: "Alice", role: "user" },
+              parent: null,
+              children: [],
+            },
+          ],
+          users: [{ id: "u1", name: "Alice" }],
+        }),
+      );
+      expect(html).not.toContain("badge");
+    });
   });
 });

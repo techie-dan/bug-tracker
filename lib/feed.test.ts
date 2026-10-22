@@ -4,6 +4,7 @@ const db = vi.hoisted(() => ({ bug: { findMany: vi.fn() }, project: { findFirst:
 vi.mock("@/lib/prisma", () => ({ prisma: db }));
 vi.mock("@/lib/tenant-context", () => ({ defaultProjectIdFor: vi.fn().mockResolvedValue("default-project") }));
 import { feedProject, feedWhere, parseFeedCursor, readFeed } from "./feed";
+import { AREA_NONE } from "@/lib/project-area-filter";
 
 const timestamp = "2026-10-19T12:00:00.000Z";
 describe("new-ticket feed", () => {
@@ -48,3 +49,8 @@ describe("new-ticket feed", () => {
     expect(db.project.findFirst).toHaveBeenLastCalledWith(expect.objectContaining({ where: { id: "default-project", tenantId: "t" } }));
   });
 });
+
+  it("filters a project feed by area, including issues with no area", () => {
+    expect(feedWhere("tenant-a", "project-a", null, "area-1")).toMatchObject({ areaId: "area-1" });
+    expect(feedWhere("tenant-a", "project-a", null, AREA_NONE)).toMatchObject({ areaId: null });
+  });

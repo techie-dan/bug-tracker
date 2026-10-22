@@ -23,6 +23,7 @@ export type SavedTriageValues = {
   severity: string;
   typeId?: string | null;
   categoryId?: string | null;
+  areaId?: string | null;
   assigneeId?: string | null;
   milestoneId?: string | null;
 };
@@ -43,6 +44,7 @@ export function triageFieldsKey(values: SavedTriageValues): string {
     values.severity,
     values.typeId ?? "",
     values.categoryId ?? "",
+    values.areaId ?? "",
     values.assigneeId ?? "",
     values.milestoneId ?? "",
   ].join("|");

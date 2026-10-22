@@ -13,6 +13,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         agent_id: bid.agentId,
         agent_name: bid.agent.name,
         beneficiary_user_id: bid.beneficiaryUserId,
+        area_match: bid.areaMatch,
         note: bid.note,
         created_at: bid.createdAt.toISOString(),
       })),

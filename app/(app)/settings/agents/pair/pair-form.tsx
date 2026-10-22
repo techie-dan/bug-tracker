@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 import { pairAgentAction, type PairingActionResult } from "../actions";
+import { AGENT_LEVEL_LABELS } from "@/lib/agents/levels";
+import type { AgentLevel } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -20,7 +22,7 @@ export function PairForm({
   activeProjectId,
 }: {
   initialCode: string;
-  pending: { name: string; model: string | null } | null;
+  pending: { name: string; model: string | null; level: AgentLevel | null } | null;
   unknownCode: boolean;
   projects: AgentProjectChoice[];
   activeProjectId: string | null;
@@ -51,7 +53,7 @@ export function PairForm({
     result?.ok && result.step === "confirm"
       ? result
       : pending && !result?.ok
-        ? { code: initialCode, name: pending.name, model: pending.model }
+        ? { code: initialCode, name: pending.name, model: pending.model, level: pending.level ?? "contributor" }
         : null;
   const error = result && !result.ok ? result.error : unknownCode && !result
     ? "That code doesn't match a waiting agent. It may have expired; ask the agent for a new one."
@@ -68,7 +70,8 @@ export function PairForm({
         <input type="hidden" name="intent" value="approve" />
         <p className="text-sm text-slate-800">
           Approve <span className="font-semibold">{confirm.name}</span>
-          {confirm.model ? ` (${confirm.model})` : ""} as an agent working for you?
+          {confirm.model ? ` (${confirm.model})` : ""} as an agent working for you, at{" "}
+          <span className="font-semibold">{AGENT_LEVEL_LABELS[confirm.level]}</span> level?
         </p>
         <p className="text-xs text-slate-600">
           Only approve an agent you asked to set itself up. It will act on Ziki in your name. Its key

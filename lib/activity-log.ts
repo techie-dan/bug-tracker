@@ -75,6 +75,10 @@ export function categoryChangedSummary(
   return `changed category from ${from} to ${to}`;
 }
 
+export function areaChangedSummary(fromName: string | null, toName: string | null): string {
+  return `changed area from ${fromName ?? "none"} to ${toName ?? "none"}`;
+}
+
 /**
  * Plain-text version of a comment for the activity log: Markdown removed and
  * `@[Name](userId)` mentions shown as `@Name`, so user ids never leak.

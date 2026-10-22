@@ -18,8 +18,6 @@ import {
 /** Searched over, then cut to SIMILAR_LIMIT once scored. */
 const CANDIDATES = 10;
 
-let trigramUnavailable = false;
-
 async function trigramMatches(query: string, tenantId: string | null): Promise<ScoredIssue[]> {
   if (!tenantId) return [];
   // `%` (similarity) and `<%` (the query as a word-run inside the title)
@@ -72,15 +70,10 @@ export async function GET(req: NextRequest) {
 
   const tenantId = await currentTenantIdFor(resolved.userId);
   let issues: SimilarIssue[];
-  if (!trigramUnavailable) {
-    try {
-      issues = pickSimilar(await trigramMatches(query, tenantId));
-    } catch (error) {
-      trigramUnavailable = true;
-      console.error("[similar] trigram search failed; using plain matching from now on", error);
-      issues = await plainMatches(query, tenantId);
-    }
-  } else {
+  try {
+    issues = pickSimilar(await trigramMatches(query, tenantId));
+  } catch (error) {
+    console.error("[similar] trigram search failed; using plain matching for this request", error);
     issues = await plainMatches(query, tenantId);
   }
 

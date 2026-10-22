@@ -70,8 +70,6 @@ export function isAcknowledged(value: unknown): boolean {
 /** Searched over, then cut to SIMILAR_LIMIT once scored (as /api/issues/similar). */
 const CANDIDATES = 10;
 
-let trigramUnavailable = false;
-
 /**
  * Open issues in this project whose title looks like `title`, using the same
  * scoring as the reporter's "is it one of these?" hint (lib/similar-issues.ts).
@@ -83,24 +81,21 @@ export async function findSimilarIssues(
 ): Promise<SimilarIssue[]> {
   const query = normalizeQuery(title);
   if (!shouldSearch(query)) return [];
-  if (!trigramUnavailable) {
-    try {
-      const rows = await db.$queryRaw<ScoredIssue[]>`
-        SELECT "id", "number", "title", "status", "voteCount",
-               GREATEST(similarity("title", ${query}), word_similarity(${query}, "title")) AS "score"
-        FROM "Bug"
-        WHERE "isDeleted" = false
-          AND "tenantId" = ${scope.tenantId}
-          AND "projectId" = ${scope.projectId}
-          AND "status"::text = ANY(${SIMILAR_STATUSES as string[]})
-          AND ("title" % ${query} OR ${query} <% "title")
-        ORDER BY "score" DESC
-        LIMIT ${CANDIDATES}`;
-      return pickSimilar(rows);
-    } catch (error) {
-      trigramUnavailable = true;
-      console.error("[agent-create] trigram search failed; using plain matching from now on", error);
-    }
+  try {
+    const rows = await db.$queryRaw<ScoredIssue[]>`
+      SELECT "id", "number", "title", "status", "voteCount",
+             GREATEST(similarity("title", ${query}), word_similarity(${query}, "title")) AS "score"
+      FROM "Bug"
+      WHERE "isDeleted" = false
+        AND "tenantId" = ${scope.tenantId}
+        AND "projectId" = ${scope.projectId}
+        AND "status"::text = ANY(${SIMILAR_STATUSES as string[]})
+        AND ("title" % ${query} OR ${query} <% "title")
+      ORDER BY "score" DESC
+      LIMIT ${CANDIDATES}`;
+    return pickSimilar(rows);
+  } catch (error) {
+    console.error("[agent-create] trigram search failed; using plain matching for this request", error);
   }
   const terms = fallbackTerms(query);
   if (terms.length < 1) return [];
@@ -152,10 +147,17 @@ export type CreatePolicyResult =
   | { status: 409; error: "idempotency_conflict"; message: string };
 
 /** An active issue type, `null` for none, or `undefined` when it isn't one. */
-async function resolveTypeId(db: Db, typeId: unknown): Promise<string | null | undefined> {
+async function resolveTypeId(
+  db: Db,
+  typeId: unknown,
+  tenantId: string,
+): Promise<string | null | undefined> {
   if (typeId === undefined || typeId === null || typeId === "") return null;
   if (typeof typeId !== "string" || typeId.length > 191) return undefined;
-  const type = await db.issueType.findUnique({ where: { id: typeId }, select: { isActive: true } });
+  const type = await db.issueType.findUnique({
+    where: { id_tenantId: { id: typeId, tenantId } },
+    select: { isActive: true },
+  });
   return type?.isActive ? typeId : undefined;
 }
 
@@ -217,7 +219,7 @@ export async function createIssueWithPolicy(input: CreatePolicyInput): Promise<C
   const earlier = await replayFor(prisma, agent.agentId, key, cutoff);
   if (earlier) return replayOrConflict(earlier, input.requestHash);
 
-  const typeId = await resolveTypeId(prisma, input.typeId);
+  const typeId = await resolveTypeId(prisma, input.typeId, agent.tenantId);
   if (typeId === undefined) {
     return { status: 422, error: "invalid_type", message: "typeId is not an active issue type." };
   }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { severities, statuses } from "@/lib/validations/issue";
 import { severityLabel, statusLabel } from "@/lib/labels";
+import { FINISHED_STATUS_FILTER } from "@/lib/issue-state";
 import {
   BUG_SORT_OPTIONS,
   bugSortLabels,
@@ -28,11 +29,13 @@ import {
   platformChoices,
   type PlatformOption,
 } from "@/lib/platform-filter";
+import { AREA_NONE, AREA_PARAM, parseProjectAreaFilter, type ProjectAreaOption } from "@/lib/project-area-filter";
 import { MILESTONE_NONE, MILESTONE_PARAM } from "@/lib/milestones";
 import {
   MIN_SUGGEST_LENGTH,
   type IssueSuggestion,
 } from "@/lib/issue-suggest";
+import { isTypingTarget } from "@/lib/keyboard-shortcuts";
 
 type TagType = { id: string; name: string; isActive?: boolean };
 
@@ -43,14 +46,28 @@ type Suggestion =
 /** Long enough not to query on every keystroke, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/**
+ * #1054: the intake stage used to be a sidebar beside the list. It is a
+ * filter now, with the same `?stage=` values so old links keep working.
+ * Ideas are reports that are not ready to pass on. Issues are.
+ */
+const STAGE_PARAM = "stage";
+const STAGE_OPTIONS = [
+  { value: "reported", label: "Ideas" },
+  { value: "confirmed", label: "Ideas awaiting upvotes" },
+  { value: "ready", label: "Issues" },
+] as const;
+
 /** URL params owned by the filter bar. `page` is paging, not a filter. */
 const FILTER_PARAMS = [
   "q",
+  STAGE_PARAM,
   TAGS_PARAM,
   "mine",
   "status",
   "severity",
   PLATFORM_PARAM,
+  AREA_PARAM,
   "sort",
   MILESTONE_PARAM,
 ];
@@ -74,14 +91,24 @@ export function IssueFilters({
   tagTypes = [],
   platforms = [],
   milestones = [],
+  areas = [],
+  shortcutsEnabled = true,
+  stageCounts,
 }: {
   tagTypes?: TagType[];
   platforms?: PlatformOption[];
   /** #289: open milestones first; closed ones stay selectable for history. */
   milestones?: { id: string; title: string; isClosed: boolean }[];
+  areas?: ProjectAreaOption[];
+  shortcutsEnabled?: boolean;
+  /** Open issues in each intake stage, shown beside the Stage choices (#1054). */
+  stageCounts?: { reported: number; confirmed: number; ready: number };
 }) {
   const router = useRouter();
   const params = useSearchParams();
+  // #690: while a navigation kicked off from this control is in flight, expose
+  // a busy state so typing/searching gets visible + announced feedback.
+  const [isSearching, startSearchTransition] = useTransition();
   const listId = useId();
   const filterPanelId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -116,6 +143,8 @@ export function IssueFilters({
   }, [filterOpen]);
 
   useEffect(() => {
+    if (!shortcutsEnabled) return;
+
     function handleKeyDown(event: KeyboardEvent) {
       const isCmdOrCtrlK =
         (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k";
@@ -130,14 +159,23 @@ export function IssueFilters({
 
       const target = event.target as HTMLElement | null;
       const isEditable =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable ||
-          Boolean(target.closest?.("[contenteditable='true']")));
+        isTypingTarget(target) ||
+        Boolean(
+          target &&
+            (target.tagName === "INPUT" ||
+              target.tagName === "TEXTAREA" ||
+              target.tagName === "SELECT" ||
+              target.isContentEditable ||
+              Boolean(target.closest?.("[contenteditable='true']"))),
+        );
+
+      const inDialog =
+        Boolean(target?.closest?.('dialog[open], [role="dialog"], [role="alertdialog"], [data-shortcuts-ignore]')) ||
+        Boolean(document.querySelector('dialog[open], [role="dialog"], [role="alertdialog"]'));
 
       if (isSlash && isEditable) return;
+      if (inDialog) return;
+      if (isCmdOrCtrlK && isEditable) return;
 
       event.preventDefault();
       inputRef.current?.focus();
@@ -146,7 +184,7 @@ export function IssueFilters({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [shortcutsEnabled]);
 
   function updateMany(changes: Record<string, string>, replace = false) {
     // Nothing changed: don't navigate (and don't reset the page, #132).
@@ -154,8 +192,10 @@ export function IssueFilters({
       return;
     }
     const href = hrefWithChanges(params, changes);
-    if (replace) router.replace(href);
-    else router.push(href);
+    startSearchTransition(() => {
+      if (replace) router.replace(href);
+      else router.push(href);
+    });
   }
 
   function update(key: string, value: string) {
@@ -178,8 +218,9 @@ export function IssueFilters({
   const [active, setActive] = useState(-1);
   const [issueSuggestions, setIssueSuggestions] = useState<IssueSuggestion[]>([]);
   const [suggestedFor, setSuggestedFor] = useState("");
-  // Enter or leaving the box applies the query at once; the debounced
-  // navigation must not also fire and duplicate it.
+  // Enter or the Search button applies the query at once; the debounced
+  // navigation must not also fire and duplicate it (#690: leaving the box no
+  // longer commits the search).
   const skipLiveRef = useRef<string | null>(null);
   // The real search before the current typing session. Picking a tag is a
   // filter choice, not text to search for, so it puts this back (#671).
@@ -202,14 +243,16 @@ export function IssueFilters({
         return;
       }
       const href = hrefWithChanges(new URLSearchParams(paramsString), { q: trimmed });
-      if (livePushedRef.current) router.replace(href);
-      else {
-        livePushedRef.current = true;
-        router.push(href);
-      }
+      startSearchTransition(() => {
+        if (livePushedRef.current) router.replace(href);
+        else {
+          livePushedRef.current = true;
+          router.push(href);
+        }
+      });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [text, currentQuery, paramsString, router]);
+  }, [text, currentQuery, paramsString, router, startSearchTransition]);
 
   // Matching issue titles for the dropdown (#671), also debounced.
   useEffect(() => {
@@ -310,24 +353,30 @@ export function IssueFilters({
     params.get("sort"),
     defaultSortFor(parseMineFilter(params.get("mine"))),
   );
-  const currentPlatform =
-    parsePlatformFilter(params.get(PLATFORM_PARAM), platforms) ?? "";
+  const currentPlatform = parsePlatformFilter(params.get(PLATFORM_PARAM), platforms) ?? "";
   const platformOptions = platformChoices(platforms, currentPlatform || null);
+  const currentArea = parseProjectAreaFilter(params.get(AREA_PARAM), areas) ?? "";
   const currentMine = parseMineFilter(params.get("mine")) ?? "";
   const currentMilestone = params.get(MILESTONE_PARAM) ?? "";
 
+  const currentStage = STAGE_OPTIONS.find((option) => option.value === params.get(STAGE_PARAM))?.value ?? "";
+
   const activeFilterCount = [
+    Boolean(currentStage),
     Boolean(params.get("status")),
     Boolean(params.get("severity")),
     Boolean(currentMine),
     selectedNames.length > 0,
-    Boolean(currentPlatform),
+    currentPlatform === PLATFORM_NONE,
+    Boolean(currentArea),
     Boolean(currentMilestone),
     Boolean(params.get("sort")),
   ].filter(Boolean).length;
 
   // Only worth offering when there is something to clear (#336).
-  const hasActiveFilters = FILTER_PARAMS.some((key) => (params.get(key) ?? "") !== "");
+  const hasActiveFilters = FILTER_PARAMS.some((key) =>
+    key === "mine" ? Boolean(currentMine) : (params.get(key) ?? "") !== "",
+  );
 
   function clearAllFilters() {
     // Empty the box straight away: until the navigation lands, the local draft
@@ -354,7 +403,11 @@ export function IssueFilters({
           <label htmlFor="q" className="mb-1 block text-xs font-medium text-slate-600">
             Search
           </label>
-          <div className="relative">
+          <div
+            className="relative"
+            aria-busy={isSearching}
+            data-testid="search-box"
+          >
             <input
               ref={inputRef}
               id="q"
@@ -367,7 +420,11 @@ export function IssueFilters({
               aria-activedescendant={active >= 0 && suggestions[active] ? `${listId}-${active}` : undefined}
               autoComplete="off"
               value={text}
-              placeholder="Search, or type a tag like Design (/)"
+              placeholder={
+                shortcutsEnabled
+                  ? "Search, or type a tag like Design (/)"
+                  : "Search, or type a tag like Design"
+              }
               className="w-full rounded-lg border border-slate-300 pl-3 pr-8 py-2 text-sm text-slate-900 shadow-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
               onChange={(event) => {
                 setText(event.target.value);
@@ -399,12 +456,13 @@ export function IssueFilters({
                 }
               }}
               onBlur={() => {
+                // #690: leaving the box must not commit the search — only
+                // Enter, the Search button, or the debounce may navigate.
                 setOpen(false);
                 setActive(-1);
-                applyQueryNow();
               }}
             />
-            {!text ? (
+            {!text && shortcutsEnabled ? (
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5">
                 <kbd className="hidden sm:inline-flex items-center rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 select-none">
                   /
@@ -452,6 +510,39 @@ export function IssueFilters({
             ) : null}
           </div>
         </div>
+
+        {/* Explicit Search submit (#690): Enter also works, but a visible
+            control makes the commit point obvious and keeps Tab-out inert. */}
+        <button
+          type="button"
+          onClick={applyQueryNow}
+          disabled={isSearching}
+          className="inline-flex h-[38px] shrink-0 items-center gap-1.5 rounded-lg border border-teal-700 bg-teal-700 px-3 text-sm font-medium text-white shadow-xs transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:cursor-default disabled:opacity-70"
+        >
+          {isSearching ? (
+            <svg
+              className="h-4 w-4 animate-spin"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+          ) : (
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+            </svg>
+          )}
+          <span>Search</span>
+        </button>
 
         {/* Unified Filter Button & Popover (#762) */}
         <div className="relative shrink-0">
@@ -555,6 +646,26 @@ export function IssueFilters({
                   </select>
                 </div>
 
+                {/* Stage (#1054): was the sidebar beside the list. */}
+                <div>
+                  <label htmlFor="stage" className="mb-1 block text-xs font-medium text-slate-600">
+                    Kind
+                  </label>
+                  <select
+                    id="stage"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                    value={currentStage}
+                    onChange={(event) => update(STAGE_PARAM, event.target.value)}
+                  >
+                    <option value="">Ideas and issues</option>
+                    {STAGE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {stageCounts ? `${option.label} (${stageCounts[option.value]})` : option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 {/* Status */}
                 <div>
                   <label htmlFor="status" className="mb-1 block text-xs font-medium text-slate-600">
@@ -572,6 +683,9 @@ export function IssueFilters({
                         {statusLabel[status]}
                       </option>
                     ))}
+                    {/* The stat grid's "Closed" tile counts resolved + closed together
+                        (#685); the same aggregate is selectable here. */}
+                    <option value={FINISHED_STATUS_FILTER}>Closed (incl. resolved)</option>
                   </select>
                 </div>
 
@@ -644,6 +758,25 @@ export function IssueFilters({
                         </option>
                       ))}
                       <option value={PLATFORM_NONE}>No platform</option>
+                    </select>
+                  </div>
+                ) : null}
+
+                {/* Project area */}
+                {areas.length > 0 ? (
+                  <div>
+                    <label htmlFor="area" className="mb-1 block text-xs font-medium text-slate-600">
+                      Area
+                    </label>
+                    <select
+                      id="area"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                      value={currentArea}
+                      onChange={(event) => update(AREA_PARAM, event.target.value)}
+                    >
+                      <option value="">All</option>
+                      {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
+                      <option value={AREA_NONE}>No area</option>
                     </select>
                   </div>
                 ) : null}
@@ -727,6 +860,7 @@ export function IssueFilters({
             </li>
           ) : null}
         </ul>
+
       ) : null}
 
       {/* Active Filter Chips */}
@@ -749,9 +883,25 @@ export function IssueFilters({
               </button>
             </span>
           ) : null}
+          {currentStage ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-slate-800">
+              Kind: {STAGE_OPTIONS.find((option) => option.value === currentStage)?.label}
+              <button
+                type="button"
+                onClick={() => update(STAGE_PARAM, "")}
+                aria-label="Remove stage filter"
+                className="ml-0.5 rounded-full p-0.5 text-slate-600 hover:bg-slate-200/60"
+              >
+                ✕
+              </button>
+            </span>
+          ) : null}
           {params.get("status") ? (
             <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-emerald-900">
-              Status: {statusLabel[params.get("status") as keyof typeof statusLabel] ?? params.get("status")}
+              Status:{" "}
+              {params.get("status") === FINISHED_STATUS_FILTER
+                ? "Closed (incl. resolved)"
+                : statusLabel[params.get("status") as keyof typeof statusLabel] ?? params.get("status")}
               <button
                 type="button"
                 onClick={() => update("status", "")}
@@ -791,14 +941,27 @@ export function IssueFilters({
               </button>
             </span>
           ))}
-          {currentPlatform ? (
+          {currentPlatform === PLATFORM_NONE ? (
             <span className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-sky-900">
-              Platform: {platforms.find((p) => p.id === currentPlatform)?.name ?? currentPlatform}
+              Platform: No platform
               <button
                 type="button"
                 onClick={() => update(PLATFORM_PARAM, "")}
                 aria-label="Remove platform filter"
                 className="ml-0.5 rounded-full p-0.5 text-sky-700 hover:bg-sky-200/60"
+              >
+                ✕
+              </button>
+            </span>
+          ) : null}
+          {currentArea ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-teal-50 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-teal-900">
+              Area: {currentArea === AREA_NONE ? "No area" : areas.find((area) => area.id === currentArea)?.name ?? currentArea}
+              <button
+                type="button"
+                onClick={() => update(AREA_PARAM, "")}
+                aria-label="Remove area filter"
+                className="ml-0.5 rounded-full p-0.5 text-teal-700 hover:bg-teal-200/60"
               >
                 ✕
               </button>

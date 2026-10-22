@@ -6,7 +6,7 @@ const source = readFileSync("scripts/migrate.mjs", "utf8");
 
 describe("container migration script (#581)", () => {
   it("runs migrate deploy before any repair step", () => {
-    const deployAt = source.indexOf('runPrisma("migrate deploy", true)');
+    const deployAt = source.indexOf('runPrisma("migrate deploy")');
     const firstEnsure = source.indexOf("--file scripts/sql/ensure-bug-number.sql");
     expect(deployAt).toBeGreaterThan(-1);
     expect(firstEnsure).toBeGreaterThan(deployAt);

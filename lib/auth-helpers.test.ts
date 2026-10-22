@@ -105,6 +105,20 @@ describe("requireUser", () => {
     signedInAs("user");
     await expect(requireUser()).resolves.toMatchObject({ role: "user", isRealAdmin: false });
   });
+
+  it("redirects to /session-expired when sessionVersion does not match DB (#655)", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "u1", email: "user@zedu.test", sessionVersion: 1 } });
+    mockResolve.mockResolvedValue({ userId: "u1" });
+    findUser.mockResolvedValue({ id: "u1", name: "U", email: "user@zedu.test", image: null, role: "user", sessionVersion: 2 });
+    await expect(requireUser()).rejects.toMatchObject({ to: "/session-expired" });
+  });
+
+  it("redirects to /session-expired on privilege escalation or downgrade when JWT role differs from DB (#655)", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "u1", email: "user@zedu.test", role: "user", sessionVersion: 1 } });
+    mockResolve.mockResolvedValue({ userId: "u1" });
+    findUser.mockResolvedValue({ id: "u1", name: "U", email: "user@zedu.test", image: null, role: "admin", sessionVersion: 1 });
+    await expect(requireUser()).rejects.toMatchObject({ to: "/session-expired" });
+  });
 });
 
 describe("requireAdmin / requireSuperAdmin", () => {

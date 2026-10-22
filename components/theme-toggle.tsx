@@ -1,8 +1,15 @@
 "use client";
 
-import { useSyncExternalStore, useTransition } from "react";
+import { createContext, useContext, useEffect, useState, useSyncExternalStore, useTransition } from "react";
 import { setThemeAction } from "@/app/actions/settings";
 import { THEMES, themeAttribute, themeLabels, type Theme } from "@/lib/theme";
+
+/** The theme the server already wrote onto `<html>`. The first client paint must use this same value. */
+const ServerThemeContext = createContext<Theme>("system");
+
+export function ThemePreference({ theme, children }: { theme: Theme; children: React.ReactNode }) {
+  return <ServerThemeContext.Provider value={theme}>{children}</ServerThemeContext.Provider>;
+}
 
 /**
  * Apply theme to documentElement immediately on client, and persist to localStorage (#659).
@@ -57,13 +64,12 @@ function getClientTheme(): Theme {
   return attr === "dark" || attr === "light" ? attr : "system";
 }
 
-function getServerTheme(): Theme {
-  return "system";
-}
-
 export function useTheme(): [Theme, (next: Theme) => void, boolean] {
+  const serverTheme = useContext(ServerThemeContext);
   const [pending, startTransition] = useTransition();
-  const theme = useSyncExternalStore(subscribeTheme, getClientTheme, getServerTheme);
+  // The server snapshot is the theme rendered on <html>. Reading a different
+  // value here (or asking the device) makes the button hydrate the other icon.
+  const theme = useSyncExternalStore(subscribeTheme, getClientTheme, () => serverTheme);
 
   const setTheme = (next: Theme) => {
     const previous = theme;
@@ -117,13 +123,21 @@ export function MoonIcon({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
-function getIsDark(theme: Theme): boolean {
-  if (theme === "dark") return true;
-  if (theme === "light") return false;
-  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }
-  return false;
+/**
+ * Whether a system theme is currently dark. Starts false so the first paint
+ * matches the server; the device setting is applied after hydration.
+ */
+function usePrefersDark(): boolean {
+  const [prefersDark, setPrefersDark] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => setPrefersDark(media.matches);
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, []);
+  return prefersDark;
 }
 
 /**
@@ -136,7 +150,8 @@ export function ThemeToggle({
   className?: string;
 }) {
   const [theme, setTheme, pending] = useTheme();
-  const isDark = getIsDark(theme);
+  const prefersDark = usePrefersDark();
+  const isDark = theme === "dark" || (theme === "system" && prefersDark);
 
   const toggle = () => {
     const next: Theme = isDark ? "light" : "dark";

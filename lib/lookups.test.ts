@@ -106,7 +106,10 @@ describe("getIssueTypes", () => {
 
   it("reads templates with the types", async () => {
     findIssueTypes.mockResolvedValue(rows.map((row) => ({ ...row, template: "steps" })));
-    await expect(getIssueTypes()).resolves.toEqual(rows.map((row) => ({ ...row, template: "steps" })));
+    await expect(getIssueTypes("tenant-ziki")).resolves.toEqual(rows.map((row) => ({ ...row, template: "steps" })));
+    expect(findIssueTypes).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: "tenant-ziki" } }),
+    );
     expect(findIssueTypes).toHaveBeenCalledTimes(1);
   });
 
@@ -114,7 +117,7 @@ describe("getIssueTypes", () => {
     findIssueTypes
       .mockRejectedValueOnce(new Error("The column `IssueType.template` does not exist in the current database."))
       .mockResolvedValueOnce(rows);
-    await expect(getIssueTypes()).resolves.toEqual(rows.map((row) => ({ ...row, template: null })));
+    await expect(getIssueTypes("tenant-ziki")).resolves.toEqual(rows.map((row) => ({ ...row, template: null })));
     expect(findIssueTypes).toHaveBeenLastCalledWith(
       expect.objectContaining({
         select: { id: true, name: true, description: true, isActive: true },
@@ -124,7 +127,7 @@ describe("getIssueTypes", () => {
 
   it("does not hide an unrelated read failure", async () => {
     findIssueTypes.mockRejectedValue(new Error('column "voteCount" does not exist'));
-    await expect(getIssueTypes()).rejects.toThrow(/voteCount/);
+    await expect(getIssueTypes("tenant-ziki")).rejects.toThrow(/voteCount/);
     expect(findIssueTypes).toHaveBeenCalledTimes(1);
   });
 
@@ -132,7 +135,12 @@ describe("getIssueTypes", () => {
     findIssueTypes
       .mockRejectedValueOnce({ code: "P2022", meta: { column: "IssueType.template" } })
       .mockResolvedValueOnce(rows);
-    await expect(getIssueTypes()).resolves.toEqual(rows.map((row) => ({ ...row, template: null })));
+    await expect(getIssueTypes("tenant-ziki")).resolves.toEqual(rows.map((row) => ({ ...row, template: null })));
+  });
+
+  it("returns nothing when no organization is open", async () => {
+    expect(await getIssueTypes(null)).toEqual([]);
+    expect(findIssueTypes).not.toHaveBeenCalled();
   });
 });
 

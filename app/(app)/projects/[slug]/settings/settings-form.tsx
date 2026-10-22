@@ -6,8 +6,17 @@ import type { ProjectActionResult } from "@/app/(app)/projects/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ProjectRewardRulesSection } from "@/components/project-reward-rules-section";
+import type { ProjectRewardConfig } from "@/lib/points/project-rewards";
 
-type Project = { slug: string; name: string; goal: string | null; repoUrl: string | null; stagingUrl: string | null };
+type Project = {
+  slug: string;
+  name: string;
+  goal: string | null;
+  repoUrl: string | null;
+  stagingUrl: string | null;
+  rewardConfig?: unknown;
+};
 
 export function ProjectSettingsForm({ project }: { project: Project }) {
   const [result, action, pending] = useActionState<ProjectActionResult | undefined, FormData>(updateProjectAction, undefined);
@@ -31,6 +40,12 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
         <Input id="project-staging-url" name="stagingUrl" type="url" inputMode="url" placeholder="https://staging.example.com" defaultValue={project.stagingUrl ?? ""} />
         {result?.field === "stagingUrl" ? <span className="text-xs text-red-700">{result.fieldErrors?.stagingUrl ?? result.error}</span> : null}
       </label>
+
+      <ProjectRewardRulesSection
+        initialConfig={project.rewardConfig as ProjectRewardConfig | null}
+        disabled={pending}
+      />
+
       <Button type="submit" disabled={pending}>{pending ? "Saving…" : "Save settings"}</Button>
       {result && !result.error ? <span role="status" className="ml-3 text-sm text-emerald-800">Settings saved.</span> : null}
     </form>

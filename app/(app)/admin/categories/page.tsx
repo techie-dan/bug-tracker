@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { ensureDefaultPlatforms, platformScopeFor } from "@/lib/categories";
 import { CategoryManager } from "@/components/category-manager";
 
-/* Distinct browser-tab title; the root layout appends "· Ziki Issues". */
+/* Distinct browser-tab title; the root layout appends "· Ziki". */
 export const metadata = { title: "Platforms" };
 
 export default async function AdminCategoriesPage() {
@@ -16,11 +16,11 @@ export default async function AdminCategoriesPage() {
       <div className="space-y-3">
         <h1 className="text-2xl font-semibold text-slate-900">Platform management</h1>
         <p className="max-w-xl text-sm text-slate-600">
-          Open an organization first. Platforms belong to one organization, not to every
-          account on the site.
+          Open a workspace first. A platform is a label on that workspace&apos;s issues,
+          such as Web or Mobile, and it is not a project.
         </p>
         <Link href="/tenants" className="text-sm font-medium text-teal-700 hover:underline">
-          Choose an organization
+          Choose a workspace
         </Link>
       </div>
     );
@@ -63,13 +63,14 @@ export default async function AdminCategoriesPage() {
           Platform management
         </h1>
         <p className="max-w-2xl text-sm text-slate-600">
-          Platforms in <span className="font-medium text-slate-800">{scope.tenantName}</span>.
-          Adding, renaming, or deactivating one changes this organization only. Issues in
-          another organization keep their own platforms.
+          A platform is a label on an issue in{" "}
+          <span className="font-medium text-slate-800">{scope.tenantName}</span>, such as Web or
+          Mobile. It is not a project. Every project in this workspace shares this list, and
+          another workspace keeps its own.
         </p>
         <p className="text-sm">
           <Link href="/tenants" className="font-medium text-teal-700 hover:underline">
-            Switch organization
+            Switch workspace
           </Link>
         </p>
       </div>

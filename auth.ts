@@ -10,6 +10,10 @@ import { isPasswordAuthEnabled } from "@/lib/auth-mode";
 import { upsertGoogleUser, type GoogleAccount } from "@/lib/google-user";
 import { isGoogleEmailAllowed, getGoogleAllowlist } from "@/lib/google-allowlist";
 import { clientIpFrom, consumeAuthRateLimit } from "@/lib/rate-limit";
+import { TwoFactorInvalidError, TwoFactorRequiredError } from "@/lib/auth-errors";
+import { isTwoFactorEnabled, verifySecondFactor } from "@/lib/two-factor";
+import { googleSignInBlockedByTwoFactor } from "@/lib/google-two-factor";
+import { acceptedSessionRefresh } from "@/lib/session-refresh";
 
 const googleClientId = cleanEnv(
   process.env.GOOGLE_CLIENT_ID || process.env.AUTH_GOOGLE_ID,
@@ -38,7 +42,7 @@ if (process.env.NODE_ENV !== "test") {
   }
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+export const { handlers, auth, signIn, signOut, unstable_update: updateSession } = NextAuth({
   ...authConfig,
   providers: [
     ...(googleConfigured
@@ -57,6 +61,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
+        totp: { label: "Authenticator or backup code", type: "text" },
       },
       async authorize(credentials, request) {
         if (!isPasswordAuthEnabled()) {
@@ -95,6 +100,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
+        // Second step (#648). Only reached with the right password, so these
+        // errors say nothing to someone guessing passwords. The check lives
+        // here, not in the form, so a direct POST to the credentials callback
+        // cannot skip it.
+        if (await isTwoFactorEnabled(user.id)) {
+          const code = typeof credentials?.totp === "string" ? credentials.totp : "";
+          if (!code.trim()) throw new TwoFactorRequiredError();
+          if (!(await verifySecondFactor(user.id, code))) throw new TwoFactorInvalidError();
+        }
+
         return {
           id: user.id,
           name: user.name,
@@ -123,9 +138,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         );
         return false;
       }
+      // Password accounts with two-factor on must use email, password, and the
+      // code. Google must not open the session by itself (#388).
+      if (email && (await googleSignInBlockedByTwoFactor(email))) {
+        console.warn(`[auth] Google sign-in refused for ${email}: two-factor is on`);
+        return "/login?error=TwoFactor";
+      }
       return true;
     },
-    async jwt({ token, user, account, profile }) {
+    async jwt({ token, user, account, profile, trigger, session }) {
       if (account?.provider === "google") {
         const email =
           typeof profile?.email === "string"
@@ -140,6 +161,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           if (!isGoogleEmailAllowed(email)) {
             throw new Error(
               `Google sign-in denied for ${email}: not on the allowlist`,
+            );
+          }
+          if (await googleSignInBlockedByTwoFactor(email)) {
+            throw new Error(
+              `Google sign-in refused for ${email}: two-factor is enabled`,
             );
           }
           const name =
@@ -196,6 +222,38 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (typeof user?.sessionVersion === "number") {
         token.sv = user.sessionVersion;
       }
+
+      // The session that signed the others out keeps working (Ziki #389). Only a
+      // server-signed refresh moves the version; see lib/session-refresh.ts.
+      if (trigger === "update") {
+        const refreshed = acceptedSessionRefresh(token, session);
+        if (refreshed !== null) token.sv = refreshed;
+      }
+
+      // Keep a stale token (#655). Edge middleware never reads the database, so
+      // dropping the session here leaves the cookie in place and /login bounces
+      // straight back to /issues. requireUser compares sessionVersion and role,
+      // then /session-expired is what actually clears the cookie.
+      const userId = (token.id ?? token.sub) as string | undefined;
+      if (userId && !user) {
+        try {
+          const dbUser = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { id: true, role: true, sessionVersion: true },
+          });
+          if (dbUser) {
+            const tokenVersion = typeof token.sv === "number" ? token.sv : 0;
+            const roleMatches = !token.role || token.role === dbUser.role;
+            if (tokenVersion === dbUser.sessionVersion && roleMatches) {
+              token.role = dbUser.role;
+              token.sv = dbUser.sessionVersion;
+            }
+          }
+        } catch {
+          // If database check errors, do not crash; token remains
+        }
+      }
+
       return token;
     },
   },

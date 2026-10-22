@@ -86,6 +86,90 @@ describe("IssueAgentActivity (#448)", () => {
     expect(screen.getByText(/marked this issue resolved\.$/)).toBeInTheDocument();
   });
 
+  it("shows the delivery countdown and when the one extension was used (#593)", () => {
+    const deliverBy = new Date(Date.now() + 90 * 60_000).toISOString();
+    const decisions: AgentDecision[] = [
+      {
+        id: "c1",
+        at: "2026-01-01T12:00:00.000Z",
+        kind: "claimed",
+        agentName: "fixer-agent",
+        personName: "Bob",
+        deliverBy,
+        extendedAt: "2026-01-01T12:10:00.000Z",
+      },
+    ];
+
+    render(<IssueAgentActivity decisions={decisions} />);
+
+    expect(screen.getByText(/Delivery due in 1h 30m/)).toBeInTheDocument();
+    expect(screen.getByText(/extension used/)).toBeInTheDocument();
+  });
+
+  it("says the claim is waiting on the owner instead of counting down (#606)", () => {
+    const decisions: AgentDecision[] = [
+      {
+        id: "c1",
+        at: "2026-01-01T12:00:00.000Z",
+        kind: "claimed",
+        agentName: "fixer-agent",
+        personName: "Bob",
+        deliverBy: new Date(Date.now() + 90 * 60_000).toISOString(),
+        waitingOnName: "Mark",
+      },
+    ];
+
+    render(<IssueAgentActivity decisions={decisions} />);
+
+    expect(screen.getByText(/Waiting for Mark to answer fixer-agent's question\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Delivery due/)).not.toBeInTheDocument();
+  });
+
+  it("shows a rejection and its notes, and never calls it a confirmation (#1122)", () => {
+    const decisions: AgentDecision[] = [
+      {
+        id: "validation-v1",
+        at: "2026-01-01T10:00:00.000Z",
+        kind: "confirmed",
+        agentName: "reviewer-one",
+        personName: "Ada",
+        severity: "medium",
+      },
+      {
+        id: "validation-v2",
+        at: "2026-01-01T11:00:00.000Z",
+        kind: "rejected",
+        agentName: "reviewer-two",
+        personName: "Stephen",
+        notes: "Could not reproduce: <b>200</b> on every list call.",
+      },
+    ];
+
+    render(<IssueAgentActivity decisions={decisions} />);
+
+    const items = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("reviewer-one confirmed this issue as real");
+    expect(items[1]).toHaveTextContent("reviewer-two found this isn't a real issue on behalf of Stephen.");
+    expect(items[1]).not.toHaveTextContent("confirmed");
+    // Notes are plain text, so markup in them is shown, not rendered.
+    expect(within(items[1]).getByText("Could not reproduce: <b>200</b> on every list call.")).toBeInTheDocument();
+  });
+
+  it("omits the notes block for a rejection without notes", () => {
+    render(
+      <IssueAgentActivity
+        decisions={[
+          { id: "validation-v3", at: "2026-01-01T11:00:00.000Z", kind: "rejected", agentName: "reviewer-two", personName: "", notes: null },
+        ]}
+      />,
+    );
+
+    const item = within(screen.getByRole("list")).getByRole("listitem");
+    expect(item).toHaveTextContent("reviewer-two found this isn't a real issue.");
+    expect(item.querySelector("blockquote")).toBeNull();
+  });
+
   it("lists the decisions in chronological order regardless of input order", () => {
     const decisions: AgentDecision[] = [
       {

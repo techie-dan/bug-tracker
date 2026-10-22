@@ -27,6 +27,7 @@ const typeLabel: Record<ActivityType, string> = {
   comment_deleted: "Moderation",
   type_changed: "Type",
   category_changed: "Category",
+  area_changed: "Area",
   duplicate_changed: "Duplicate",
 };
 
@@ -41,22 +42,46 @@ export function ActivityTimeline({
 }) {
   const total = totalCount ?? activities.length;
   const trimmed = total > activities.length;
+  // #418: collapse the read-only history by default so long activity lists
+  // stop pushing the conversation down the page. Native details/summary keeps
+  // the component server-rendered, works with mouse, keyboard and without
+  // JavaScript, and browsers auto-open the section when a URL targets an
+  // entry inside it. Issues without activity keep the empty state visible.
+  if (activities.length === 0) {
+    return (
+      <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          Activity ({total})
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Read-only history of changes on this issue.
+        </p>
+        <p className="mt-4 text-sm text-slate-500">No activity recorded yet.</p>
+      </section>
+    );
+  }
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-        Activity ({total})
-      </h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Read-only history of changes on this issue.
-        {trimmed
-          ? ` Showing the ${activities.length} most recent of ${total}.`
-          : ""}
-      </p>
-      {activities.length === 0 ? (
-        <p className="mt-4 text-sm text-slate-500">
-          No activity recorded yet.
-        </p>
-      ) : (
+      <details className="group">
+        <summary className="cursor-pointer list-none select-none -m-1 rounded-md p-1 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600">
+          <span className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Activity ({total})
+            </h2>
+            <span
+              aria-hidden="true"
+              className="shrink-0 text-slate-400 transition-transform duration-150 group-open:rotate-90"
+            >
+              ▸
+            </span>
+          </span>
+          <p className="mt-1 text-xs text-slate-500">
+            Read-only history of changes on this issue.
+            {trimmed
+              ? ` Showing the ${activities.length} most recent of ${total}.`
+              : ""}
+          </p>
+        </summary>
         <ol className="relative mt-5 space-y-0 border-l border-slate-200 pl-4 sm:pl-5">
           {activities.map((entry) => (
             <li key={entry.id} className="relative pb-5 last:pb-0">
@@ -91,7 +116,7 @@ export function ActivityTimeline({
             </li>
           ))}
         </ol>
-      )}
+      </details>
     </section>
   );
 }

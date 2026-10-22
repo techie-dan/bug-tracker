@@ -31,13 +31,7 @@ function renderVoteButton(
 
 function likeButton() {
   return screen.getByRole("button", {
-    name: /^(Like|Unlike) this issue/,
-  }) as HTMLButtonElement;
-}
-
-function dislikeButton() {
-  return screen.getByRole("button", {
-    name: /^(Dislike|Remove dislike)/,
+    name: /^(Upvote this issue|Upvoted)/,
   }) as HTMLButtonElement;
 }
 
@@ -124,34 +118,47 @@ describe("VoteButton optimistic update and rollback", () => {
 
     await waitFor(() => expect(mockedToggleVote).toHaveBeenCalledWith("b1", 1));
 
-    // Button is now "Unlike this issue" → toggled off → "Like this issue"
+    // "Upvoted" → toggled off → "Upvote this issue"
     expect(like.getAttribute("aria-pressed")).toBe("false");
     expect(countOf(like).textContent).toBe("1");
   });
 
-  it("switches a dislike into a like", async () => {
+  it("turns an old dislike into an upvote with one click (#1059)", async () => {
     mockedToggleVote.mockResolvedValueOnce({
       ok: true,
-      voteCount: 5,
+      voteCount: 2,
       likeCount: 2,
       dislikeCount: 0,
       userVote: 1,
       voted: true,
     });
 
-    renderVoteButton({ userVote: -1, likeCount: 1, dislikeCount: 1 });
+    renderVoteButton({ userVote: -1, likeCount: 1 });
     const like = likeButton();
-    const dislike = dislikeButton();
-
-    expect(dislike.getAttribute("aria-pressed")).toBe("true");
-    expect(countOf(dislike).textContent).toBe("1");
+    expect(like.getAttribute("aria-pressed")).toBe("false");
     expect(countOf(like).textContent).toBe("1");
 
     fireEvent.click(like);
 
-    await waitFor(() => expect(countOf(dislike).textContent).toBe("0"));
+    await waitFor(() => expect(mockedToggleVote).toHaveBeenCalledWith("b1", 1));
     expect(countOf(like).textContent).toBe("2");
     expect(like.getAttribute("aria-pressed")).toBe("true");
-    expect(dislike.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it.each(["sm", "md"] as const)("offers no downvote or Dislike (%s, #1059)", (size) => {
+    renderVoteButton({ size });
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /dislike|downvote/i })).toBeNull();
+  });
+});
+
+describe("VoteButton large size accessible name", () => {
+  it("starts with the text it shows, so speech users can say what they see", () => {
+    const { unmount } = render(<VoteButton bugId="b1" voteCount={2} size="md" />);
+    const button = screen.getByRole("button", { name: /^Upvote 2 votes$/ });
+    expect(button.textContent?.replace(/\s+/g, " ").trim()).toBe("Upvote 2");
+    unmount();
+    render(<VoteButton bugId="b1" voteCount={3} userVote={1} size="md" />);
+    expect(screen.getByRole("button", { name: /^Upvoted 3 votes, click to remove your vote$/ })).toBeTruthy();
   });
 });

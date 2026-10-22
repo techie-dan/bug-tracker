@@ -42,7 +42,7 @@ export async function tenantIdForUser(
   if (!userId) return null;
   try {
     const memberships = await db.membership.findMany({
-      where: { userId },
+      where: { userId, tenant: { archivedAt: null } },
       select: { tenantId: true, tenant: { select: { slug: true } } },
       orderBy: { createdAt: "asc" },
     });
@@ -116,13 +116,17 @@ export function commentInTenant(tenantId: string | null): { bug: TenantScope } {
 /**
  * Notifications in `tenantId`. Personal notifications without a workspace stay
  * visible in each workspace; the feed can bypass this scope for all workspaces.
+ * A tenant invite is personal too: the recipient is not in that workspace yet,
+ * so hiding it behind the destination tenant means they never see it.
  */
 export function notificationInTenant(
   tenantId: string | null,
   allWorkspaces = false,
 ): Prisma.NotificationWhereInput {
   if (allWorkspaces) return {};
-  return tenantId ? { OR: [{ tenantId: null }, { tenantId }] } : { tenantId: null };
+  const invite = { kind: "tenant_invite" };
+  if (!tenantId) return { OR: [{ tenantId: null }, invite] };
+  return { OR: [{ tenantId: null }, { tenantId }, invite] };
 }
 
 /** Shown when someone without a tenant tries to file an issue. */

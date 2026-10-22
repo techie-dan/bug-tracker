@@ -7,11 +7,12 @@ import {
   reviewerConflict,
   type ReviewedBug,
 } from "@/lib/agents/independence";
-import { MERGE_VERDICTS_NEEDED } from "@/lib/agent-api/merge";
+import { workflowFor } from "@/lib/workflow";
+import { DEFAULT_PROJECT_WORKFLOW } from "@/lib/workflow-config";
 
 export const REVIEW_OFFER_TTL_MS = 60_000; // 60 seconds to accept
 export const REVIEW_DEADLINE_MS = 30 * 60_000; // 30 minutes to review after acceptance
-export const DEFAULT_REVIEW_VERDICTS_NEEDED = MERGE_VERDICTS_NEEDED; // 2 independent reviewers
+export const DEFAULT_REVIEW_VERDICTS_NEEDED = DEFAULT_PROJECT_WORKFLOW.verdictsNeeded;
 
 type Db = typeof prisma | Prisma.TransactionClient;
 
@@ -224,7 +225,8 @@ export async function createReviewOffers(
   });
   if (!bug) return { offers: [] };
 
-  const verdictsNeeded = options.verdictsNeeded ?? DEFAULT_REVIEW_VERDICTS_NEEDED;
+  const verdictsNeeded =
+    options.verdictsNeeded ?? (await workflowFor(bug.projectId, db)).verdictsNeeded;
 
   // Determine existing reviewers already holding an active/accepted/completed offer for this bug
   const excludeUserIds = new Set<string>();
@@ -396,7 +398,8 @@ export async function reofferReview(
     }
   }
 
-  if (excludeUserIds.size >= DEFAULT_REVIEW_VERDICTS_NEEDED) return null;
+  const { verdictsNeeded } = await workflowFor(bug.projectId, db);
+  if (excludeUserIds.size >= verdictsNeeded) return null;
 
   const candidates = await findEligibleReviewerCandidates(db, bug.tenantId, bug, excludeUserIds);
   const next = candidates.find((c) => !excludeUserIds.has(c.beneficiaryUserId));
@@ -557,7 +560,8 @@ export async function handleTestVerdictSubmitted(
   }
 
   const count = independentVerdicts.length;
-  if (count >= MERGE_VERDICTS_NEEDED) {
+  const { verdictsNeeded } = await workflowFor(bug.projectId, db);
+  if (count >= verdictsNeeded) {
     // Check if review.completed has already been emitted for this bug to prevent duplicates
     const alreadyPublished = await db.agentEvent.findFirst({
       where: {
@@ -578,7 +582,7 @@ export async function handleTestVerdictSubmitted(
           issueId: params.bugId,
           pullRequestUrl: params.pullRequestUrl,
           verdictCount: count,
-          threshold: MERGE_VERDICTS_NEEDED,
+          threshold: verdictsNeeded,
         },
       });
     }

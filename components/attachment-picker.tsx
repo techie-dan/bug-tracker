@@ -5,6 +5,7 @@ import { BASE_PATH } from "@/lib/base-path";
 import {
   ATTACHMENT_ACCEPT,
   ATTACHMENT_HELP,
+  MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS_PER_ITEM,
   formatBytes,
 } from "@/lib/attachments";
@@ -98,8 +99,17 @@ export function AttachmentPicker({
       file,
       key: `${file.name}-${file.size}-${Math.random().toString(36).slice(2)}`,
     }));
-    update((list) => [...list, ...added.map(({ file, key }) => ({ key, name: file.name, state: "uploading" as const }))]);
-    added.forEach(({ file, key }) => void upload(file, key));
+    update((list) => [
+      ...list,
+      ...added.map(({ file, key }) =>
+        file.size > MAX_ATTACHMENT_BYTES
+          ? { key, name: file.name, state: "error" as const, error: "File is too large (max 5 MB)." }
+          : { key, name: file.name, state: "uploading" as const },
+      ),
+    ]);
+    added
+      .filter(({ file }) => file.size <= MAX_ATTACHMENT_BYTES)
+      .forEach(({ file, key }) => void upload(file, key));
     if (inputRef.current) inputRef.current.value = "";
   }
 

@@ -244,13 +244,13 @@ export async function api(ctx, baseUrl, route, options = {}) {
  * @param {{ name: string, model?: string, url?: string, open?: boolean, configFile: string }} options
  */
 export async function pair(ctx, options) {
-  const { name, model, open = true, configFile } = options;
+  const { name, model, level, open = true, configFile } = options;
   const baseUrl = options.url ?? DEFAULT_URL;
   if (!name) throw new Error('--name is required, e.g. --name "Ada\'s Claude"');
 
   const start = await api(ctx, baseUrl, "/api/v1/agents/pairing", {
     method: "POST",
-    body: model ? { name, model } : { name },
+    body: { name, ...(model ? { model } : {}), ...(level ? { level } : {}) },
     retries: 5,
   });
   const {
@@ -465,7 +465,7 @@ async function handleEvent(ctx, { exec, configFile, config }, event) {
 const HELP = `ziki-agent: reference client for the Ziki agent API
 
 Usage:
-  node scripts/ziki-agent.mjs pair --name <name> [--model <model>] [--url <site>] [--no-open]
+  node scripts/ziki-agent.mjs pair --name <name> [--model <model>] [--level <level>] [--url <site>] [--no-open]
   node scripts/ziki-agent.mjs watch [--exec <command>] [--types a,b] [--wait <0-25>] [--replay]
 
 pair   Start device-code pairing, open the approval page, save the key.
@@ -474,6 +474,7 @@ watch  Long-poll events. Each event goes to --exec as a JSON line on stdin,
 
 Options:
   --url <site>     Ziki site (default ${DEFAULT_URL}; or set ZIKI_URL)
+  --level <level>  Level to request: observer, contributor (default), triager, reviewer, dispatcher
   --config <file>  Key file (default ~/.config/ziki/agent.json; or ZIKI_AGENT_CONFIG)
   --replay         On first run, handle existing events instead of skipping them
 `;
@@ -499,6 +500,7 @@ export async function main(argv, ctx = makeContext()) {
     options: {
       name: { type: "string" },
       model: { type: "string" },
+      level: { type: "string" },
       url: { type: "string" },
       config: { type: "string" },
       exec: { type: "string" },
@@ -518,6 +520,7 @@ export async function main(argv, ctx = makeContext()) {
       await pair(ctx, {
         name: values.name ?? "",
         model: values.model,
+        level: values.level,
         url,
         open: !values["no-open"],
         configFile,

@@ -9,11 +9,14 @@ vi.mock("next/headers", () => ({ cookies: cookiesFn }));
 import {
   ACTIVE_TENANT_COOKIE,
   createTenant,
+  deleteTenant,
   homePathFor,
   landingPath,
   memberTenantById,
   memberTenantBySlug,
   promoteFirstZeduOwner,
+  renameTenant,
+  setTenantArchived,
   tenantMembersFrom,
   readActiveTenantCookie,
   setActiveTenantCookie,
@@ -101,6 +104,17 @@ describe("where a signed-in person lands (#444)", () => {
     await expect(homePathFor(db as never, "zed")).resolves.toBe("/issues");
     await expect(homePathFor(db as never, "new-account")).resolves.toBe("/tenants");
   });
+
+  it("doesn't auto-select an archived tenant (#573)", async () => {
+    const db = {
+      membership: {
+        findMany: vi.fn().mockResolvedValue([
+          { tenantId: "tenant-acme", tenant: { archivedAt: new Date("2026-10-01") } },
+        ]),
+      },
+    } as never;
+    await expect(homePathFor(db, "ada")).resolves.toBe("/tenants");
+  });
 });
 
 describe("the person's tenants (#444)", () => {
@@ -126,6 +140,31 @@ describe("the person's tenants (#444)", () => {
     expect(db.membership.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: { userId: "zed", tenant: { slug: "acme" } } }),
     );
+  });
+
+  it("loads the tenant when archivedAt has not been migrated yet", async () => {
+    const row = { role: "owner" as const, tenant: { id: "tenant-ziki", slug: "ziki", name: "Ziki" } };
+    const missing = Object.assign(
+      new Error("The column `Tenant.archivedAt` does not exist in the current database."),
+      { code: "P2022", meta: { column: "Tenant.archivedAt" } },
+    );
+    const findFirst = vi.fn().mockRejectedValueOnce(missing).mockResolvedValueOnce(row);
+    const db = { membership: { findFirst } };
+
+    await expect(memberTenantBySlug(db as never, "ada", "ziki")).resolves.toEqual({
+      ...row.tenant,
+      archivedAt: null,
+      role: "owner",
+    });
+    expect(findFirst).toHaveBeenCalledTimes(2);
+    expect(findFirst.mock.calls[1][0].select.tenant.select).not.toHaveProperty("archivedAt");
+  });
+
+  it("still fails the slug lookup when the database error is not a missing archivedAt", async () => {
+    const findFirst = vi.fn().mockRejectedValue(new Error('column "voteCount" does not exist'));
+    const db = { membership: { findFirst } };
+    await expect(memberTenantBySlug(db as never, "ada", "ziki")).rejects.toThrow(/voteCount/);
+    expect(findFirst).toHaveBeenCalledTimes(1);
   });
 
   it("doesn't query for something that can't be a slug", async () => {
@@ -202,7 +241,7 @@ describe("createTenant (#444)", () => {
       if (failure) throw failure;
       return { id: "tenant-new", slug: data.slug, name: data.name, projects: [{ id: "project-new" }] };
     });
-    return { tenant: { create } };
+    return { tenant: { create }, membership: { findFirst: vi.fn<(args: unknown) => Promise<unknown>>(async () => null) } };
   }
   const slugTaken = Object.assign(new Error("Unique constraint failed on the fields: (`slug`)"), {
     code: "P2002",
@@ -267,7 +306,7 @@ describe("createTenant (#444)", () => {
     const db = tenantDb();
     expect(await createTenant(db as never, { id: "ada" }, { name: " a " })).toEqual({
       ok: false,
-      error: "Tenant name must be at least 2 characters.",
+      error: "Workspace name must be at least 2 characters.",
       field: "name",
     });
     expect(await createTenant(db as never, { id: "ada" }, { name: "x".repeat(61) })).toMatchObject({
@@ -285,6 +324,51 @@ describe("createTenant (#444)", () => {
     });
     expect(await createTenant(db as never, { id: "ada" }, {})).toMatchObject({ ok: false, field: "name" });
     expect(db.tenant.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses markup-like names (#537)", async () => {
+    const db = tenantDb();
+    expect(await createTenant(db as never, { id: "ada" }, { name: "<b>Évil</b> Co" })).toEqual({
+      ok: false,
+      error: "Workspace name can't contain < or >.",
+      field: "name",
+    });
+    expect(await createTenant(db as never, { id: "ada" }, { name: "Acme", projectName: "<script>" })).toMatchObject({
+      ok: false,
+      field: "projectName",
+    });
+    // Accents and emoji are real names.
+    expect(await createTenant(db as never, { id: "ada" }, { name: "Évora Café 😀" })).toMatchObject({ ok: true });
+  });
+
+  it("asks before creating a second tenant with a name you already have (#537)", async () => {
+    const db = tenantDb();
+    db.membership.findFirst.mockResolvedValue({ tenant: { name: "Acme", slug: "acme" } });
+
+    const result = await createTenant(db as never, { id: "ada" }, { name: "  acme " });
+    expect(result).toEqual({
+      ok: false,
+      field: "name",
+      duplicateName: "acme",
+      error: `You're already in an organization called "Acme" (acme). Choose another name, or select Create anyway to have both.`,
+    });
+    expect(db.membership.findFirst.mock.calls[0]![0]).toMatchObject({
+      where: { userId: "ada", tenant: { name: { equals: "acme", mode: "insensitive" } } },
+    });
+    expect(db.tenant.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the duplicate once the same name is confirmed (#537)", async () => {
+    const db = tenantDb();
+    db.membership.findFirst.mockResolvedValue({ tenant: { name: "Acme", slug: "acme" } });
+
+    const result = await createTenant(db as never, { id: "ada" }, { name: "Acme", confirmDuplicate: " Acme " }, () => "q7i3");
+    expect(result).toMatchObject({ ok: true, tenant: { name: "Acme" } });
+    expect(db.membership.findFirst).not.toHaveBeenCalled();
+
+    // Confirming a different name doesn't skip the check.
+    const other = await createTenant(db as never, { id: "ada" }, { name: "Acme", confirmDuplicate: "Acme Labs" });
+    expect(other).toMatchObject({ ok: false, duplicateName: "Acme" });
   });
 });
 
@@ -370,5 +454,118 @@ describe("Zedu's first owner (#444)", () => {
       ok: false,
       field: "email",
     });
+  });
+});
+
+describe("tenant lifecycle (#573)", () => {
+  function lifecycleDb({
+    role = "owner" as "owner" | "admin" | "member",
+    archivedAt = null as Date | null,
+    memberships = 1,
+    bugs = 0,
+    agents = 0,
+  } = {}) {
+    const update = vi.fn().mockResolvedValue({});
+    const remove = vi.fn().mockResolvedValue({});
+    return {
+      membership: {
+        findUnique: vi.fn().mockResolvedValue({ role, tenant: { ...ACME, archivedAt } }),
+      },
+      tenant: {
+        update,
+        delete: remove,
+        findUnique: vi.fn().mockResolvedValue({
+          _count: { memberships, bugs, agents },
+        }),
+      },
+      update,
+      remove,
+    };
+  }
+
+  it("renames a tenant for its owner, keeping the slug", async () => {
+    const db = lifecycleDb();
+    expect(await renameTenant(db as never, "ada", ACME.id, "  Acme   Corp ")).toMatchObject({
+      ok: true,
+      tenant: { id: ACME.id, slug: "acme", name: "Acme Corp" },
+    });
+    expect(db.update).toHaveBeenCalledWith({
+      where: { id: ACME.id },
+      data: { name: "Acme Corp" },
+    });
+  });
+
+  it("doesn't rename for a non-owner, an archived tenant or an invalid name", async () => {
+    const nonOwner = lifecycleDb({ role: "member" });
+    expect(await renameTenant(nonOwner as never, "ada", ACME.id, "Acme")).toMatchObject({
+      ok: false,
+    });
+    expect(nonOwner.update).not.toHaveBeenCalled();
+
+    const archived = lifecycleDb({ archivedAt: new Date("2026-10-01") });
+    expect(await renameTenant(archived as never, "ada", ACME.id, "Acme")).toMatchObject({
+      ok: false,
+    });
+    expect(archived.update).not.toHaveBeenCalled();
+
+    const invalid = lifecycleDb();
+    expect(await renameTenant(invalid as never, "ada", ACME.id, "A")).toMatchObject({
+      ok: false,
+      error: "Workspace name must be at least 2 characters.",
+    });
+    expect(invalid.update).not.toHaveBeenCalled();
+  });
+
+  it("archives and restores a tenant only for its owner", async () => {
+    const db = lifecycleDb();
+    expect(await setTenantArchived(db as never, "ada", ACME.id, true)).toMatchObject({
+      ok: true,
+      tenant: { archivedAt: expect.any(Date) },
+    });
+    expect(db.update).toHaveBeenCalledWith({
+      where: { id: ACME.id },
+      data: { archivedAt: expect.any(Date) },
+    });
+
+    const restored = lifecycleDb({ archivedAt: new Date("2026-10-01") });
+    expect(await setTenantArchived(restored as never, "ada", ACME.id, false)).toMatchObject({
+      ok: true,
+      tenant: { archivedAt: null },
+    });
+    expect(restored.update).toHaveBeenCalledWith({
+      where: { id: ACME.id },
+      data: { archivedAt: null },
+    });
+
+    const nonOwner = lifecycleDb({ role: "admin" });
+    expect(await setTenantArchived(nonOwner as never, "ada", ACME.id, true)).toMatchObject({
+      ok: false,
+    });
+    expect(nonOwner.update).not.toHaveBeenCalled();
+  });
+
+  it("deletes an empty tenant only after its owner types the name", async () => {
+    const db = lifecycleDb();
+    expect(await deleteTenant(db as never, "ada", ACME.id, ACME.name)).toMatchObject({
+      ok: true,
+      tenant: { id: ACME.id },
+    });
+    expect(db.remove).toHaveBeenCalledWith({ where: { id: ACME.id } });
+
+    const wrongName = lifecycleDb();
+    expect(await deleteTenant(wrongName as never, "ada", ACME.id, "wrong")).toMatchObject({
+      ok: false,
+    });
+    expect(wrongName.remove).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a tenant with issues, agents or other members", async () => {
+    for (const counts of [{ bugs: 1 }, { agents: 1 }, { memberships: 2 }]) {
+      const db = lifecycleDb(counts);
+      expect(await deleteTenant(db as never, "ada", ACME.id, ACME.name)).toMatchObject({
+        ok: false,
+      });
+      expect(db.remove).not.toHaveBeenCalled();
+    }
   });
 });

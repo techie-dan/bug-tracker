@@ -21,7 +21,7 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-const card = "rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8";
+const card = "rounded-2xl border border-slate-200 bg-white p-6 sm:p-8";
 
 function errorMessage(code: string | undefined): string | null {
   if (!code) return null;

@@ -1,12 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agentIssueRequest } from "@/lib/agent-api/issues";
-import { parseEventCursor, pollEvents, encodeEventCursor } from "@/lib/agent-api/events";
+import { parseEventCursor, parseEventFilters, pollEvents, encodeEventCursor } from "@/lib/agent-api/events";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 /**
- * GET /api/v1/events?after=&afterId=&wait=
+ * GET /api/v1/events?after=&afterId=&wait=&types=&projectId=&bugId=
  *
  * Returns agent events for the caller's tenant in ascending order (oldest first).
  *
@@ -14,6 +14,12 @@ export const maxDuration = 60;
  * - `after`    — opaque cursor from a previous response, or an ISO-8601 timestamp.
  * - `afterId`  — required when `after` is a timestamp; ties-breaks events at the same time.
  * - `wait`     — long-poll seconds (0–25). `0` or absent returns immediately.
+ * - `types`    — comma list of event types or prefixes (`claim.*`); an unknown
+ *                type returns 400 with `validTypes`.
+ * - `projectId`, `bugId` — only events for that project / issue.
+ *
+ * Filters combine (AND). The cursor is global, so a filtered poll can resume
+ * from any cursor this endpoint returned (#602).
  *
  * The response shape:
  * ```json
@@ -45,7 +51,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "wait must be between 0 and 25 seconds." }, { status: 400 });
     }
 
-    const rows = await pollEvents(agent, cursorResult, waitSeconds).catch(() => null);
+    const filters = parseEventFilters(params);
+    if ("error" in filters) return NextResponse.json(filters, { status: 400 });
+
+    const rows = await pollEvents(agent, cursorResult, waitSeconds, filters).catch(() => null);
     if (!rows) return NextResponse.json({ error: "Event feed unavailable." }, { status: 503 });
     const events = rows.slice(0, 100);
 

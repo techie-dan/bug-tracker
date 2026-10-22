@@ -42,7 +42,7 @@ async function main() {
     data: { id: "tenant_zedu", slug: "zedu", name: "Ziki" },
   });
   await prisma.project.create({
-    data: { id: "project_zedu", tenantId: tenant.id, slug: "zedu", name: "Ziki" },
+    data: { id: "project_zedu", tenantId: tenant.id, slug: "zedu", name: "Ziki", workflow: { create: {} } },
   });
 
   for (const name of ["Desktop", "Web", "Mobile"]) {
@@ -54,7 +54,7 @@ async function main() {
     ["Design", "UI/UX and visual design tasks"],
     ["Marketing", "Marketing and promotion related tasks"],
   ]) {
-    await prisma.issueType.create({ data: { name, description, isActive: true } });
+    await prisma.issueType.create({ data: { tenantId: tenant.id, name, description, isActive: true } });
   }
 
   // Cost 4: these are throwaway test accounts and the suite signs in often.

@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
   agentQuestion: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(), count: vi.fn() },
   membership: { findUnique: vi.fn() },
   bug: { findFirst: vi.fn() },
+  issueClaim: { updateMany: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
+  $queryRaw: vi.fn(),
   agentAuditEvent: { create: vi.fn() },
   agentEvent: { create: vi.fn() },
   webhookSubscription: { findMany: vi.fn() },
@@ -17,6 +19,7 @@ vi.mock("@/lib/notify", () => ({ notifyLater: notify.notifyLater }));
 
 import {
   answerAgentQuestion,
+  askAgentEscalation,
   askAgentQuestion,
   classifyEscalation,
   countPendingEscalations,
@@ -24,7 +27,7 @@ import {
   readAgentQuestion,
   type AskAgentQuestionInput,
 } from "./agent-questions";
-import type { AgentContext } from "@/lib/agents/require-agent";
+import { AgentProjectError, type AgentContext } from "@/lib/agents/require-agent";
 
 const agent: AgentContext = {
   agentId: "a1",
@@ -76,6 +79,32 @@ describe("askAgentQuestion (#446)", () => {
     db.bug.findFirst.mockResolvedValue(null);
     await expect(askAgentQuestion(agent, { body: "What now?", bugId: "b-other" })).rejects.toMatchObject({ status: 404 });
     expect(db.agentQuestion.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("project-scoped keys on questions and escalations (#412)", () => {
+  const scoped: AgentContext = { ...agent, projectId: "project-a", projectSlug: "a" };
+
+  it("refuses to link an issue from another project, before anything is stored or returned", async () => {
+    db.bug.findFirst.mockResolvedValue({ id: "b-in-b", title: "Project B's secret title", projectId: "project-b" });
+    for (const ask of [askAgentQuestion, askAgentEscalation]) {
+      await expect(ask(scoped, { body: "Can I take this?", bugId: "b-in-b" })).rejects.toBeInstanceOf(AgentProjectError);
+    }
+    expect(db.agentQuestion.create).not.toHaveBeenCalled();
+    expect(notify.notifyLater).not.toHaveBeenCalled();
+  });
+
+  it("links an issue in the key's own project", async () => {
+    db.bug.findFirst.mockResolvedValue({ id: "b-in-a", title: "Header overlaps", projectId: "project-a" });
+    db.agentQuestion.create.mockResolvedValue({ id: "q2", bugId: "b-in-a", body: "Can I take this?", createdAt: new Date() });
+    const question = await askAgentQuestion(scoped, { body: "Can I take this?", bugId: "b-in-a" });
+    expect(question.bugTitle).toBe("Header overlaps");
+  });
+
+  it("leaves a key without a project restriction as it was", async () => {
+    db.bug.findFirst.mockResolvedValue({ id: "b-in-b", title: "Other project", projectId: "project-b" });
+    db.agentQuestion.create.mockResolvedValue({ id: "q3", bugId: "b-in-b", body: "Hi there", createdAt: new Date() });
+    await expect(askAgentQuestion({ ...agent, projectId: null }, { body: "Hi there", bugId: "b-in-b" })).resolves.toMatchObject({ id: "q3" });
   });
 });
 
@@ -140,6 +169,84 @@ describe("answerAgentQuestion (#446)", () => {
 
     await expect(answerAgentQuestion("owner", "t1", "q1", "hi")).rejects.toMatchObject({ status: 403 });
     expect(db.agentQuestion.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe("pausing a claim while the agent waits on its owner (#606)", () => {
+  const now = new Date("2026-10-20T12:00:00Z");
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    db.$queryRaw.mockResolvedValue([{ id: "b1" }]);
+    db.issueClaim.updateMany.mockResolvedValue({ count: 1 });
+    db.agentQuestion.count.mockResolvedValue(0);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("marks the agent's active claim on the issue as waiting when it asks", async () => {
+    db.agentQuestion.create.mockResolvedValue({ id: "q1", bugId: "b1", body: "Which API?", createdAt: now });
+
+    await askAgentQuestion(agent, { body: "Which API?", bugId: "b1" });
+
+    expect(db.issueClaim.updateMany).toHaveBeenCalledWith({
+      where: { bugId: "b1", agentId: "a1", status: "active", releasedAt: null, waitingOnOwnerSince: null },
+      data: { waitingOnOwnerSince: now },
+    });
+    expect(db.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(db.issueClaim.updateMany.mock.invocationCallOrder[0]);
+  });
+
+  it("leaves claims alone for a question about no issue", async () => {
+    await askAgentQuestion(agent, { body: "Should I fix the header?" });
+    expect(db.issueClaim.updateMany).not.toHaveBeenCalled();
+  });
+
+  function answeredOnIssue() {
+    db.agentQuestion.findFirst.mockResolvedValue({ id: "q1", agentId: "a1", bugId: "b1", ownerUserId: "owner" });
+  }
+
+  it("resumes the claim on answer, adding the wait back to both clocks", async () => {
+    answeredOnIssue();
+    db.issueClaim.findFirst.mockResolvedValue({
+      id: "c1", waitingOnOwnerSince: minutesAgo(60), deliverBy: minutesAgo(50), lastHeartbeatAt: minutesAgo(65), claimedAt: minutesAgo(70),
+    });
+
+    await answerAgentQuestion("owner", "t1", "q1", "Use v2.");
+
+    expect(db.agentQuestion.count).toHaveBeenCalledWith({ where: { agentId: "a1", bugId: "b1", answeredAt: null } });
+    expect(db.issueClaim.update).toHaveBeenCalledWith({
+      where: { id: "c1" },
+      data: {
+        waitingOnOwnerSince: null,
+        deliverBy: new Date(now.getTime() + 10 * 60_000),
+        lastHeartbeatAt: minutesAgo(5),
+      },
+    });
+  });
+
+  it("caps a heartbeat sent during the wait at the time of the answer", async () => {
+    answeredOnIssue();
+    db.issueClaim.findFirst.mockResolvedValue({
+      id: "c1", waitingOnOwnerSince: minutesAgo(60), deliverBy: null, lastHeartbeatAt: minutesAgo(10), claimedAt: minutesAgo(70),
+    });
+
+    await answerAgentQuestion("owner", "t1", "q1", "Use v2.");
+
+    expect(db.issueClaim.update).toHaveBeenCalledWith({
+      where: { id: "c1" },
+      data: { waitingOnOwnerSince: null, deliverBy: null, lastHeartbeatAt: now },
+    });
+  });
+
+  it("stays paused while the agent has another open question on the issue", async () => {
+    answeredOnIssue();
+    db.agentQuestion.count.mockResolvedValue(1);
+
+    await answerAgentQuestion("owner", "t1", "q1", "Use v2.");
+
+    expect(db.issueClaim.findFirst).not.toHaveBeenCalled();
+    expect(db.issueClaim.update).not.toHaveBeenCalled();
   });
 });
 

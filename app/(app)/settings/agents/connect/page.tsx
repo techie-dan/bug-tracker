@@ -75,7 +75,7 @@ export default async function ConnectAgentPage() {
           </Link>
         </div>
         <p className="text-sm text-slate-600">
-          One-click agent setup. Pick your assistant, copy the setup block, approve the pairing request, and test your connection.
+          Connect a separate agent for each level you use. Pick your assistant, copy the setup block, approve the pairing request, and test your connection.
         </p>
       </div>
 

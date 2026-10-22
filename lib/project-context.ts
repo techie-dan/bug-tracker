@@ -45,7 +45,7 @@ export async function projectsForTenant(
 ): Promise<ProjectChoice[]> {
   try {
     return await db.project.findMany({
-      where: { tenantId },
+      where: { tenantId, archivedAt: null },
       select: { id: true, name: true, slug: true },
       orderBy: { createdAt: "asc" },
     });

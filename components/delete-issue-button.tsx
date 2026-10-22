@@ -6,26 +6,52 @@ import { deleteBugAction } from "@/app/actions/issues";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
+import {
+  deleteSummary,
+  type TicketDeletionCounts,
+} from "@/lib/ticket-deletion";
 import { isRedirectError } from "@/lib/toast-store";
 
 type DeleteBugButtonProps = {
   bugId: string;
   bugTitle: string;
+  /** Shown in the confirm text so it matches the page. */
+  counts?: TicketDeletionCounts;
   variant?: "danger" | "danger-secondary" | "ghost";
   size?: "sm" | "md";
   label?: string;
   className?: string;
 };
 
+function AlertIcon({ className = "h-3.5 w-3.5 shrink-0" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
 export function DeleteIssueButton({
   bugId,
   bugTitle,
+  counts,
   variant = "danger-secondary",
   size = "md",
   label = "Delete issue",
   className = "",
 }: DeleteBugButtonProps) {
   const [error, setError] = useState<string | null>(null);
+  const errorId = `delete-error-${bugId}`;
   const [pending, startTransition] = useTransition();
   const confirm = useConfirm();
   const toast = useToast();
@@ -39,13 +65,14 @@ export function DeleteIssueButton({
         type="button"
         variant={variant}
         disabled={pending}
+        aria-describedby={error ? errorId : undefined}
         className={`${sizeClasses} ${className}`}
         onClick={async (event) => {
           event.preventDefault();
           event.stopPropagation();
           const confirmed = await confirm({
             title: `Delete "${bugTitle}"?`,
-            body: "The issue will be hidden from regular users, but admins can restore it if needed.",
+            body: deleteSummary(counts),
             confirmLabel: "Delete issue",
             tone: "danger",
           });
@@ -92,8 +119,13 @@ export function DeleteIssueButton({
         </span>
       </Button>
       {error ? (
-        <p className="text-xs text-red-600" role="alert">
-          {error}
+        <p
+          id={errorId}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700"
+          role="alert"
+        >
+          <AlertIcon className="h-3.5 w-3.5 shrink-0 text-red-600" />
+          <span>{error}</span>
         </p>
       ) : null}
     </div>

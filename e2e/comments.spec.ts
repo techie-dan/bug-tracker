@@ -7,7 +7,7 @@ test("comments on an issue and replies to the comment", async ({ page, uniq }) =
   const thread = page.locator("[id^='comment-']");
   const comment = `Same here on Firefox ${Date.now()}`;
   await page.locator("textarea#body").fill(comment);
-  await page.getByRole("button", { name: "Post comment" }).click();
+  await page.getByRole("button", { name: /Post to conversation|Post comment/ }).click();
   await expect(thread.getByText(comment).first()).toBeVisible();
 
   const reply = `Fixed by clearing the cache ${Date.now()}`;

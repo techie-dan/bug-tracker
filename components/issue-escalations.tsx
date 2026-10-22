@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { classifyEscalation } from "@/lib/agent-questions";
+import { parseEscalationBody } from "@/lib/agent-questions";
 import { LocalTime } from "@/components/local-time";
 import { EscalationTypeBadge, QuickResolveButtons } from "@/app/(app)/escalations/escalation-controls";
 
@@ -57,7 +57,8 @@ export function IssueEscalations({
 
       <ul className="space-y-3">
         {escalations.map((esc) => {
-          const type = classifyEscalation(esc.body);
+          const parsed = parseEscalationBody(esc.body);
+          const type = parsed.type;
           const isPending = !esc.answeredAt;
 
           return (
@@ -85,7 +86,7 @@ export function IssueEscalations({
                 )}
               </div>
 
-              <p className="whitespace-pre-wrap text-sm text-slate-800">{esc.body}</p>
+              <p className="whitespace-pre-wrap text-sm text-slate-800">{parsed.cleanBody}</p>
 
               {isPending ? (
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-amber-200/60">

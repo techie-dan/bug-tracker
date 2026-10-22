@@ -8,6 +8,7 @@ vi.mock("@/lib/agents/require-agent", async (original) => ({
 }));
 const prisma = vi.hoisted(() => ({
   project: { findMany: vi.fn() },
+  agent: { findUnique: vi.fn() },
 }));
 vi.mock("@/lib/prisma", () => ({ prisma }));
 
@@ -20,6 +21,7 @@ describe("GET /api/v1/agents/me (#742)", () => {
       { id: "project_web", slug: "web", name: "Web" },
       { id: "project_api", slug: "api", name: "API" },
     ]);
+    prisma.agent.findUnique.mockResolvedValue({ instructions: null });
   });
 
   it("returns the project the key is limited to", async () => {
@@ -34,6 +36,9 @@ describe("GET /api/v1/agents/me (#742)", () => {
     });
     const response = await GET(new NextRequest("http://localhost:3000/api/v1/agents/me"));
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-ratelimit-limit")).toBe("600");
+    expect(response.headers.get("x-ratelimit-remaining")).not.toBeNull();
+    expect(response.headers.get("x-ratelimit-reset")).not.toBeNull();
     await expect(response.json()).resolves.toEqual({
       id: "agent1",
       name: "Ada's Claude",
@@ -46,6 +51,7 @@ describe("GET /api/v1/agents/me (#742)", () => {
         { id: "project_web", slug: "web", name: "Web" },
         { id: "project_api", slug: "api", name: "API" },
       ],
+      instructions: null,
     });
   });
 
@@ -62,5 +68,17 @@ describe("GET /api/v1/agents/me (#742)", () => {
       where: { tenantId: "tenant_zedu" }, orderBy: { slug: "asc" },
       select: { id: true, slug: true, name: true },
     });
+  });
+
+  it("returns the owner's standing instructions (#605)", async () => {
+    requireAgent.mockResolvedValue({
+      agentId: "agent1", name: "Ada's Claude", ownerId: "ada", tenantId: "tenant_zedu",
+      level: "observer", projectId: null, projectSlug: null,
+    });
+    prisma.agent.findUnique.mockResolvedValue({ instructions: "Focus on desktop bugs today." });
+    const response = await GET(new NextRequest("http://localhost:3000/api/v1/agents/me"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ instructions: "Focus on desktop bugs today." });
+    expect(prisma.agent.findUnique).toHaveBeenCalledWith({ where: { id: "agent1" }, select: { instructions: true } });
   });
 });

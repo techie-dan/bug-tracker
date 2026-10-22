@@ -5,6 +5,8 @@ import { audit } from "@/lib/agents/audit";
 import type { AgentContext } from "@/lib/agents/require-agent";
 import { publish } from "@/lib/agent-api/events";
 import { notifyMergeFailed } from "@/lib/agent-notifications";
+import { checkApprovalOpen } from "@/lib/approvals";
+import { workflowFor } from "@/lib/workflow";
 
 /**
  * Merging the linked pull request after the tracker accepts a fix (#452).
@@ -78,10 +80,23 @@ export function sameRepo(a: RepoRef, b: RepoRef): boolean {
 
 export type PullRequest = { merged: boolean; mergeable: boolean; headSha: string };
 
+/** What GitHub answered the merge request (#492). */
+export type MergePullResult = {
+  merged: boolean;
+  sha?: string;
+  forbidden?: boolean;
+  /** GitHub refused because the head moved since the checks were read. */
+  conflict?: boolean;
+  /** The repository allows no merge method the app can use. */
+  noAllowedMethod?: boolean;
+};
+
 export interface GitHubClient {
   getPullRequest(ref: PullRequestRef): Promise<PullRequest>;
   checksGreen(ref: PullRequestRef, headSha: string): Promise<boolean>;
-  mergePullRequest(ref: PullRequestRef): Promise<{ merged: boolean; sha?: string; forbidden?: boolean }>;
+  /** Merge `ref` pinned to `headSha`, the commit whose checks were verified. */
+  mergePullRequest(ref: PullRequestRef, headSha: string): Promise<MergePullResult>;
+  getPullRequestFiles?(ref: PullRequestRef): Promise<string[]>;
 }
 
 export class GitHubError extends Error {}
@@ -164,33 +179,74 @@ export function createInstallationClient(
       return { merged: !!body.merged, mergeable: body.mergeable !== false, headSha: body.head?.sha ?? "" };
     },
     async checksGreen(ref, headSha) {
-      const response = await request(`/repos/${ref.owner}/${ref.repo}/commits/${headSha}/check-runs`);
-      if (response.ok) {
+      // Every check run on the head commit has to be read (#491). GitHub
+      // pages check runs 30 at a time by default; a failing run past the
+      // first page used to stay invisible while the gate passed.
+      const runs: { status?: string; conclusion?: string | null }[] = [];
+      for (let page = 1; ; page += 1) {
+        const response = await request(
+          `/repos/${ref.owner}/${ref.repo}/commits/${headSha}/check-runs?per_page=100&page=${page}`,
+        );
+        if (!response.ok) break;
         const body = (await response.json()) as {
           check_runs?: { status?: string; conclusion?: string | null }[];
+          total_count?: number;
         };
-        const runs = body.check_runs ?? [];
-        if (runs.length) {
-          return runs.every(
-            (run) =>
-              run.status === "completed" &&
-              (run.conclusion === "success" || run.conclusion === "neutral" || run.conclusion === "skipped"),
-          );
-        }
+        const batch = body.check_runs ?? [];
+        runs.push(...batch);
+        if (batch.length < 100 || runs.length >= (body.total_count ?? runs.length)) break;
+      }
+      if (runs.length) {
+        // Fail closed (#491): anything still queued or in progress, failed or
+        // cancelled, is not green. Only completed runs with a passing
+        // conclusion pass.
+        return runs.every(
+          (run) =>
+            run.status === "completed" &&
+            (run.conclusion === "success" || run.conclusion === "neutral" || run.conclusion === "skipped"),
+        );
       }
       // No check runs: fall back to commit statuses. No statuses at all means
-      // the repository has no required checks, so the gate holds.
+      // the repository has no required checks, so the gate holds. A "pending"
+      // state while statuses exist means a check is still running — that is
+      // not green (#491).
       const status = await request(`/repos/${ref.owner}/${ref.repo}/commits/${headSha}/status`);
       if (!status.ok) return false;
-      const body = (await status.json()) as { state?: string };
-      return body.state === "success" || body.state === "pending" || body.state === undefined;
+      const body = (await status.json()) as { state?: string; statuses?: unknown[] };
+      const statuses = body.statuses ?? [];
+      if (!statuses.length && (body.state === undefined || body.state === "pending")) return true;
+      return body.state === "success";
     },
-    async mergePullRequest(ref) {
+    async mergePullRequest(ref, headSha) {
+      // Squash is not universally allowed (#492): ask the repository which
+      // methods it accepts and prefer squash, then a merge commit, then
+      // rebase. If the settings can't be read, keep the old squash default.
+      let method: string | null = "squash";
+      const repo = await request(`/repos/${ref.owner}/${ref.repo}`);
+      if (repo.ok) {
+        const body = (await repo.json()) as {
+          allow_squash_merge?: boolean;
+          allow_merge_commit?: boolean;
+          allow_rebase_merge?: boolean;
+        };
+        method = body.allow_squash_merge
+          ? "squash"
+          : body.allow_merge_commit
+            ? "merge"
+            : body.allow_rebase_merge
+              ? "rebase"
+              : null;
+      }
+      if (!method) return { merged: false, noAllowedMethod: true };
+      // Pinning `sha` (#492): GitHub then refuses with 409 when the head has
+      // moved since the checks were read, so unreviewed commits never merge.
       const response = await request(`/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/merge`, {
         method: "PUT",
-        body: JSON.stringify({ merge_method: "squash" }),
+        body: JSON.stringify({ merge_method: method, sha: headSha }),
       });
       if (response.status === 403) return { merged: false, forbidden: true };
+      if (response.status === 405) return { merged: false, noAllowedMethod: true };
+      if (response.status === 409) return { merged: false, conflict: true };
       if (!response.ok) return { merged: false };
       const body = (await response.json()) as { merged?: boolean; sha?: string };
       return { merged: !!body.merged, sha: body.sha };
@@ -198,7 +254,8 @@ export function createInstallationClient(
   };
 }
 
-function clientFor(installationId: string | null | undefined, env?: NodeJS.ProcessEnv): GitHubClient | null {
+/** The client for a project's GitHub App installation, when it has one (#489). */
+export function clientForInstallation(installationId: string | null | undefined, env?: NodeJS.ProcessEnv): GitHubClient | null {
   if (!installationId) return null;
   try {
     return createInstallationClient(installationId, env);
@@ -216,25 +273,31 @@ export type MergeFailureReason =
   | "not_accepted"
   | "no_pull_request"
   | "repo_mismatch"
+  | "pull_request_changed"
   | "checks_failed"
+  | "head_moved"
   | "no_permission"
-  | "merge_failed";
+  | "merge_failed"
+  | "waiting_for_human"
+  | "auto_merge_disabled";
 
 export type MergeResult =
   | { status: 200; merged: true; mergeCommitSha: string; pullRequestUrl: string }
-  | { status: 403 | 404 | 409 | 422; merged: false; reason: MergeFailureReason; message: string };
+  | { status: 403 | 404 | 409 | 422; merged: false; reason: MergeFailureReason; message: string; approvalId?: string };
 
 export type MergeDeps = {
   /** Injected in tests; the real client is built from the project's installation. */
   client?: GitHubClient;
   db?: PrismaClient;
   env?: NodeJS.ProcessEnv;
+  files?: string[];
 };
 
 const mergeBugSelect = {
   id: true,
   title: true,
   tenantId: true,
+  projectId: true,
   pullRequestUrl: true,
   assigneeId: true,
   project: { select: { repoUrl: true, githubInstallationId: true } },
@@ -249,6 +312,7 @@ type LoadedBug = {
   id: string;
   title: string;
   tenantId: string;
+  projectId: string;
   pullRequestUrl: string | null;
   assigneeId: string | null;
   project: { repoUrl: string | null; githubInstallationId: string | null } | null;
@@ -296,6 +360,39 @@ async function recordMergeFailure(
 }
 
 /**
+ * The `issue.accepted` audit row that still stands for an issue (#490).
+ *
+ * Acceptance lives on the audit row rather than on `Bug.status`, so this is
+ * the single test for "a merger accepted this fix". A tenant admin undo
+ * (#450) stamps `undoneAt`; an undone acceptance must not gate anything.
+ *
+ * The payload carries what was accepted (#489): the pull request and its
+ * head commit at the time, so a different PR — or new commits — can't merge.
+ */
+export async function standingAcceptance(
+  db: PrismaClient,
+  bugId: string,
+): Promise<{ id: string; payload: unknown } | null> {
+  return db.agentAuditEvent.findFirst({
+    where: { bugId, action: "issue.accepted", undoneAt: null },
+    select: { id: true, payload: true },
+  });
+}
+
+/** What `acceptFix` recorded on the acceptance row (#489). */
+export type AcceptedFix = { pullRequestUrl?: string; headSha?: string | null };
+
+function acceptedFixOf(accepted: { payload: unknown } | null): AcceptedFix {
+  const payload = accepted?.payload;
+  if (!payload || typeof payload !== "object") return {};
+  const { pullRequestUrl, headSha } = payload as { pullRequestUrl?: unknown; headSha?: unknown };
+  return {
+    ...(typeof pullRequestUrl === "string" ? { pullRequestUrl } : {}),
+    ...(typeof headSha === "string" ? { headSha } : {}),
+  };
+}
+
+/**
  * Merge the accepted fix's linked pull request (#452). See the module comment
  * for the gates. Success records the merge commit sha on the `github.merged`
  * audit event and returns it.
@@ -314,13 +411,38 @@ export async function mergeAcceptedFix(
   if (!bug) return fail(404, "not_found", "No such issue in this agent's tenant.");
 
   // Gate 1: #434 accepted the fix. Gate on its audit row, not on `status`,
-  // which a person can also set by resolving the issue.
-  const accepted = await db.agentAuditEvent.findFirst({
-    where: { bugId: bug.id, action: "issue.accepted" },
-    select: { id: true },
-  });
+  // which a person can also set by resolving the issue. A tenant admin's undo
+  // (#450) stamps `undoneAt` on that row; an undone acceptance gates nothing.
+  const accepted = await standingAcceptance(db, bug.id);
   if (!accepted) {
     return fail(409, "not_accepted", "The fix has not been accepted on the tracker yet.");
+  }
+
+  // Gate 1b (#489): the acceptance names the pull request that was reviewed.
+  // If the issue now links a different one, the fix was swapped after
+  // acceptance — refuse, and merge nothing.
+  const acceptedFix = acceptedFixOf(accepted);
+  if (
+    acceptedFix.pullRequestUrl &&
+    bug.pullRequestUrl &&
+    acceptedFix.pullRequestUrl !== bug.pullRequestUrl
+  ) {
+    return fail(
+      409,
+      "pull_request_changed",
+      "This issue's accepted fix is bound to a different pull request — link the accepted one again.",
+    );
+  }
+
+  // Gate 1c (#595): a project can turn automatic GitHub merging off. Tracker
+  // acceptance still records the fix; a person merges the pull request.
+  const workflow = await workflowFor(bug.projectId, db);
+  if (!workflow.autoMerge) {
+    return fail(
+      409,
+      "auto_merge_disabled",
+      "Automatic merging is off for this project; a person must merge the pull request.",
+    );
   }
 
   // Gate 2: the issue links a pull request that belongs to the project's repo.
@@ -331,7 +453,30 @@ export async function mergeAcceptedFix(
     return fail(422, "repo_mismatch", "That pull request is not in this project's repository.");
   }
 
-  const client = deps.client ?? clientFor(bug.project?.githubInstallationId, deps.env);
+  const client = deps.client ?? clientForInstallation(bug.project?.githubInstallationId, deps.env);
+  let prFiles = deps.files ?? [];
+  if (!prFiles.length && client?.getPullRequestFiles) {
+    try {
+      prFiles = await client.getPullRequestFiles(ref);
+    } catch {
+      // Non-fatal if files cannot be read
+    }
+  }
+
+  const approvalCheck = await checkApprovalOpen(bug.id, "before_merge", {
+    db: db as never,
+    files: prFiles,
+    agent,
+  });
+  if (!approvalCheck.allowed) {
+    return {
+      status: 409,
+      merged: false,
+      reason: "waiting_for_human",
+      approvalId: approvalCheck.approvalId,
+      message: "Human approval required before merge.",
+    };
+  }
   if (!client) {
     await recordMergeFailure(agent, bug, "The app is not installed on this repository.", db);
     return fail(403, "no_permission", "The app is not allowed to merge this repository.");
@@ -343,6 +488,18 @@ export async function mergeAcceptedFix(
   } catch {
     await recordMergeFailure(agent, bug, "GitHub could not be reached.", db);
     return fail(409, "merge_failed", "GitHub could not be reached.");
+  }
+
+  // Gate 2b (#489): the head commit GitHub reports must be the one that was
+  // accepted. Commits pushed after acceptance were never reviewed by the
+  // acceptance, so the merge stays blocked until the fix is re-verified.
+  if (acceptedFix.headSha && pullRequest.headSha && acceptedFix.headSha !== pullRequest.headSha) {
+    await recordMergeFailure(agent, bug, "The pull request changed after the fix was accepted.", db);
+    return fail(
+      409,
+      "head_moved",
+      "The accepted pull request's head commit changed since acceptance — verify the new commits before merging.",
+    );
   }
 
   // Gate 3: the pull request's required checks are green.
@@ -358,10 +515,11 @@ export async function mergeAcceptedFix(
     return fail(409, "checks_failed", "The pull request's required checks are not green.");
   }
 
-  // Gate 4: the app has permission to merge that repo.
-  let merged: { merged: boolean; sha?: string; forbidden?: boolean };
+  // Gate 4: the app has permission to merge that repo. The merge is pinned to
+  // the head SHA whose checks were verified (#492).
+  let merged: MergePullResult;
   try {
-    merged = await client.mergePullRequest(ref);
+    merged = await client.mergePullRequest(ref, pullRequest.headSha);
   } catch {
     await recordMergeFailure(agent, bug, "GitHub could not be reached.", db);
     return fail(409, "merge_failed", "GitHub could not be reached.");
@@ -369,6 +527,22 @@ export async function mergeAcceptedFix(
   if (merged.forbidden) {
     await recordMergeFailure(agent, bug, "The app is not allowed to merge this repository.", db);
     return fail(403, "no_permission", "The app is not allowed to merge this repository.");
+  }
+  if (merged.conflict) {
+    await recordMergeFailure(agent, bug, "The pull request changed after its checks were verified.", db);
+    return fail(
+      409,
+      "head_moved",
+      "The pull request's head commit changed since its checks were verified — link it again and verify the new commits.",
+    );
+  }
+  if (merged.noAllowedMethod) {
+    await recordMergeFailure(agent, bug, "The repository allows no merge method the app can use.", db);
+    return fail(
+      422,
+      "merge_failed",
+      "This repository allows no merge method the app can use. Enable squash, merge or rebase merges for it on GitHub.",
+    );
   }
   if (!merged.merged) {
     await recordMergeFailure(agent, bug, "GitHub refused the merge.", db);

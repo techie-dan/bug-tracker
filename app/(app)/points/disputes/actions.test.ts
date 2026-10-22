@@ -200,7 +200,7 @@ describe("resolveDisputeAction (#436)", () => {
     );
     expect(p.pointEntry.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: [expect.objectContaining({ points: -25, sourceKey: "correction:dispute-1" })],
+        data: [expect.objectContaining({ points: -25, sourceKey: "undo:entry-1" })],
       }),
     );
   });

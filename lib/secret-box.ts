@@ -1,7 +1,9 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { cleanEnv } from "@/lib/env-clean";
 
 /**
- * AES-256-GCM sealed with a key derived from AUTH_SECRET.
+ * AES-256-GCM sealed with a key derived from NEXTAUTH_SECRET.
+ * AUTH_SECRET is accepted when that name is the one set locally.
  * Used so a shareable invite link can be shown again to the people who
  * manage it, without storing the raw token in the clear.
  */
@@ -11,9 +13,9 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
 function encryptionKey(): Buffer {
-  const secret = process.env.AUTH_SECRET;
+  const secret = cleanEnv(process.env.NEXTAUTH_SECRET) || cleanEnv(process.env.AUTH_SECRET);
   if (!secret || secret.length < 16) {
-    throw new Error("AUTH_SECRET must be set before invite links can be stored.");
+    throw new Error("NEXTAUTH_SECRET must be set before invite links can be stored.");
   }
   return createHash("sha256").update(secret, "utf8").digest();
 }

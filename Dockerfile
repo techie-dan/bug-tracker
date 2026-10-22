@@ -5,6 +5,14 @@ RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-lock.yaml ./
 COPY prisma ./prisma
 RUN pnpm install --frozen-lockfile
+# pnpm does not hoist @prisma/engines to node_modules/@prisma/engines.
+# Copying that path fails the image build ("not found") and Coolify keeps
+# the previous container. Install the CLI into its own tree so migrate can
+# resolve the engine and its dependencies.
+RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
+    && mkdir -p /opt/prisma-cli \
+    && npm init -y --prefix /opt/prisma-cli >/dev/null \
+    && npm install --prefix /opt/prisma-cli --omit=dev --no-package-lock --no-audit --no-fund "prisma@${PRISMA_VERSION}"
 
 FROM node:22-alpine AS builder
 RUN apk add --no-cache openssl libc6-compat
@@ -30,13 +38,12 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
 
 # Migrations: schema + migrations and the migrate script. The Prisma CLI is not
-# part of the traced standalone output, so copy just that package and its engines.
+# part of the traced standalone output. It lives in /opt/prisma-cli (see deps).
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/scripts ./scripts
-COPY --from=builder --chown=node:node /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder --chown=node:node /app/node_modules/@prisma/engines ./node_modules/@prisma/engines
+COPY --from=deps --chown=node:node /opt/prisma-cli /opt/prisma-cli
 RUN mkdir -p ./node_modules/.bin \
-    && ln -s ../prisma/build/index.js ./node_modules/.bin/prisma
+    && ln -s /opt/prisma-cli/node_modules/.bin/prisma ./node_modules/.bin/prisma
 
 EXPOSE 3000
 

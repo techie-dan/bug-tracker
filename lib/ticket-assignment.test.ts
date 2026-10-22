@@ -49,13 +49,26 @@ describe("canAssignTicket", () => {
     ).toBe(true);
   });
 
-  it("allows normal users to assign unassigned tickets to themselves", () => {
+  it("refuses a normal user taking an unassigned ticket", () => {
     expect(
       canAssignTicket({
         actorId: "user-1",
         actorRole: "user",
         currentAssigneeId: null,
         targetAssigneeId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows the beneficiary to take an unassigned ticket when the assignment is a claim", () => {
+    expect(
+      canAssignTicket({
+        actorId: "user-1",
+        actorRole: "user",
+        currentAssigneeId: null,
+        targetAssigneeId: "user-1",
+        voteCount: 3,
+        claimed: true,
       }),
     ).toBe(true);
   });
@@ -160,7 +173,7 @@ describe("canAssignTicket", () => {
       ).toBe(false);
     });
 
-    it("allows assignment when voteCount reaches or exceeds 3", () => {
+    it("lets an organization admin assign at 3 votes, and still refuses a member taking it", () => {
       expect(
         canAssignTicket({
           actorId: "admin-1",
@@ -179,7 +192,7 @@ describe("canAssignTicket", () => {
           targetAssigneeId: "user-1",
           voteCount: 5,
         }),
-      ).toBe(true);
+      ).toBe(false);
     });
 
     it("allows unassigning even if voteCount is below 3", () => {

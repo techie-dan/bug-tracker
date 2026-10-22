@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { pointsProgress, TARGET_POINTS, TARGET_SOLVED_TASKS } from "@/lib/points/rules";
+import { pointsProgress, TARGET_POINTS } from "@/lib/points/rules";
 
 function ProgressRow({
   label,
@@ -52,14 +52,8 @@ export function PointsSummary({ points, solvedTasks }: { points: number; solvedT
         {solvedTasks} solved task{solvedTasks === 1 ? "" : "s"}
         {progress.targetMet ? " · Goal reached" : ""}
       </p>
-      <div className="mt-4 space-y-3">
+      <div className="mt-4">
         <ProgressRow label="Points" value={points} target={TARGET_POINTS} percent={progress.pointsPercent} />
-        <ProgressRow
-          label="Solved tasks"
-          value={solvedTasks}
-          target={TARGET_SOLVED_TASKS}
-          percent={progress.solvedPercent}
-        />
       </div>
     </section>
   );

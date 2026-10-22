@@ -80,12 +80,14 @@ function fakeDb() {
       if (key === "tenant") out.tenant = { ...tenantOf(link.tenantId) };
       else if (key === "invitedBy") out.invitedBy = { name: userOf(link.invitedById).name };
       else if (key === "redemptions") {
-        const spec = select.redemptions as { take?: number };
+        const spec = select.redemptions as { take?: number; select?: { userId?: boolean } };
         const rows = redemptions
           .filter((redemption) => redemption.linkId === link.id)
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
           .slice(0, spec.take ?? 8);
-        out.redemptions = rows.map((redemption) => ({ user: { name: userOf(redemption.userId).name } }));
+        out.redemptions = rows.map((redemption) =>
+          spec.select?.userId ? { userId: redemption.userId } : { user: { name: userOf(redemption.userId).name } },
+        );
       } else out[key] = link[key as keyof Link];
     }
     return out;
@@ -103,6 +105,13 @@ function fakeDb() {
     memberships,
     links,
     redemptions,
+    user: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        users
+          .filter((user) => where.id.in.includes(user.id))
+          .map((user) => ({ id: user.id, name: user.name })),
+      ),
+    },
     membership: {
       findUnique: vi.fn(async ({ where, select }: { where: { tenantId_userId: { tenantId: string; userId: string } }; select: Record<string, unknown> }) => {
         const key = where.tenantId_userId;
@@ -387,6 +396,19 @@ describe("managing share links", () => {
     expect(await revokeShareLink(db as never, { id: "bob" }, db.links[0]!.id, NOW)).toMatchObject({ ok: false });
     expect((await revokeShareLink(db as never, { id: "cara" }, db.links[0]!.id, NOW)).ok).toBe(true);
     expect((await listShareLinks(db as never, "acme", NOW))[0]?.state).toBe("revoked");
+  });
+
+  it("still lists a link when someone who joined no longer has an account", async () => {
+    const db = setup();
+    const created = await create(db);
+    if (!created.ok) throw new Error("create failed");
+    db.redemptions.push({ id: "red-gone", linkId: db.links[0]!.id, userId: "gone", createdAt: NOW });
+    db.links[0]!.useCount = 1;
+
+    const [listed] = await listShareLinks(db as never, "acme", NOW);
+    expect(listed?.url).toBe(created.url);
+    expect(listed?.joinedNames).toEqual([]);
+    expect(listed?.invitedByName).toBe("Ada");
   });
 
   it("hides a link whose stored token can no longer be opened", async () => {

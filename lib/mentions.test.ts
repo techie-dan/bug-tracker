@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentMentionId,
+  extractMentionedAgentIds,
   extractMentionedUserIds,
   filterUsersForMention,
   formatMention,
   getMentionQuery,
   insertMention,
+  newlyMentionedAgentIds,
   newlyMentionedUserIds,
   normalizeMentions,
+  parseAgentMentionId,
   tokenizeMentions,
 } from "./mentions";
 
@@ -224,5 +228,44 @@ describe("code-aware mention processing (#731)", () => {
     expect(normalizeMentions(body, nameMap)).toBe(
       `@[Alice Smith](${aliceId}) met @Unknown`,
     );
+  });
+});
+
+describe("agent mentions (#603)", () => {
+  const agentId = "clxxxxxxxxxxxxxxxxxxxxxxxa1";
+  const tag = `@[Mark's Claude](agent:${agentId})`;
+
+  it("formats and parses the agent: id prefix", () => {
+    expect(agentMentionId(agentId)).toBe(`agent:${agentId}`);
+    expect(formatMention("Mark's Claude", agentMentionId(agentId))).toBe(tag);
+    expect(parseAgentMentionId(`agent:${agentId}`)).toBe(agentId);
+    expect(parseAgentMentionId(aliceId)).toBeNull();
+    expect(parseAgentMentionId("agent:")).toBeNull();
+  });
+
+  it("keeps agent ids out of user ids and extracts them separately", () => {
+    const body = `@[Alice](${aliceId}) and ${tag}, again ${tag}`;
+    expect(extractMentionedUserIds(body)).toEqual([aliceId]);
+    expect(extractMentionedAgentIds(body)).toEqual([agentId]);
+  });
+
+  it("ignores agent tags inside code", () => {
+    expect(extractMentionedAgentIds(`\`${tag}\``)).toEqual([]);
+  });
+
+  it("finds only newly mentioned agents on edit", () => {
+    expect(newlyMentionedAgentIds("hi", `hi ${tag}`)).toEqual([agentId]);
+    expect(newlyMentionedAgentIds(`hi ${tag}`, `hello ${tag}`)).toEqual([]);
+  });
+
+  it("keeps a known agent tag with its real name and degrades unknown ones", () => {
+    const known = new Map([[agentMentionId(agentId), "Mark's Claude"]]);
+    expect(normalizeMentions(`@[Old name](agent:${agentId}) hi`, known)).toBe(`${tag} hi`);
+    expect(normalizeMentions(`@[Stranger](agent:other) hi`, known)).toBe("@Stranger hi");
+  });
+
+  it("inserts an agent option as an agent tag", () => {
+    const mention = getMentionQuery("ping @Ma", 8)!;
+    expect(insertMention("ping @Ma", mention, 8, "Mark's Claude", agentMentionId(agentId)).value).toBe(`ping ${tag} `);
   });
 });

@@ -28,6 +28,6 @@ describe("page titles", () => {
   });
 
   it("keeps the root template that appends the site name", () => {
-    expect(readFileSync("app/layout.tsx", "utf8")).toContain('template: "%s · Ziki Issues"');
+    expect(readFileSync("app/layout.tsx", "utf8")).toContain('template: "%s · Ziki"');
   });
 });

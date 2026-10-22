@@ -12,6 +12,8 @@ import { roleLabels } from "@/lib/roles";
 import { Badge } from "@/components/ui/badge";
 import { LocalTime } from "@/components/local-time";
 import { statusClass, statusLabels } from "@/lib/labels";
+import { teamAgentsForMember } from "@/lib/team-directory";
+import { TeamAgentList } from "@/components/team-agent-list";
 
 type ProfileProps = { params: Promise<{ id: string }> };
 
@@ -91,6 +93,15 @@ export default async function ProfilePage({ params }: ProfileProps) {
   const reportedTotal = counts.reduce((sum, row) => sum + row._count._all, 0);
   const resolved =
     counts.find((row) => row.status === "resolved")?._count._all ?? 0;
+  const tenantMembership = tenantId
+    ? await prisma.membership.findFirst({
+        where: { tenantId, userId: person.id },
+        select: { id: true },
+      })
+    : null;
+  const agents = tenantId && tenantMembership
+    ? await teamAgentsForMember(prisma, tenantId, person.id)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -150,6 +161,13 @@ export default async function ProfilePage({ params }: ProfileProps) {
           ) : null}
         </section>
       ) : null}
+
+      <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="profile-agents-heading">
+        <h2 id="profile-agents-heading" className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          Agents
+        </h2>
+        <TeamAgentList agents={agents} />
+      </section>
 
       <IssueList
         heading="Reported"

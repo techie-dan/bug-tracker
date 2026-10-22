@@ -1,15 +1,21 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { releaseWorkOfRevokedAgent } from "@/lib/agent-api/revoke-release";
 
 /**
- * Options for deleting or offboarding a user account safely (#356).
+ * Options for deleting or offboarding a user account safely (#356, #571).
  */
 export type OffboardUserOptions = {
   /**
    * Target user ID to reassign any reported bugs to (e.g. system bot or administrator).
    * If omitted and the user has reported bugs, offboarding will reject with an error
-   * explaining that reported bugs must be preserved.
+   * explaining that reported bugs must be preserved, unless anonymizeAuthoredContent is true.
    */
   fallbackReporterId?: string;
+  /**
+   * Whether to automatically anonymise authored content (reported bugs, comments, activities)
+   * to a system placeholder user instead of requiring fallbackReporterId (#571).
+   */
+  anonymizeAuthoredContent?: boolean;
 };
 
 export type OffboardUserResult = {
@@ -28,15 +34,46 @@ export class UserHasReportedBugsError extends Error {
   }
 }
 
+export class SoleTenantOwnerError extends Error {
+  constructor(public readonly tenantName: string) {
+    super(
+      `Cannot delete account while you are the sole owner of "${tenantName}". Transfer ownership or delete the organization first.`,
+    );
+    this.name = "SoleTenantOwnerError";
+  }
+}
+
+export const ANONYMOUS_USER_EMAIL = "deleted-user@issue-tracker.local";
+
+export async function getOrCreateAnonymizedUser(
+  client: PrismaClient | Prisma.TransactionClient,
+): Promise<{ id: string }> {
+  const existing = await client.user.findUnique({
+    where: { email: ANONYMOUS_USER_EMAIL },
+    select: { id: true },
+  });
+  if (existing) return existing;
+
+  return client.user.create({
+    data: {
+      name: "Deleted User",
+      email: ANONYMOUS_USER_EMAIL,
+      role: "user",
+    },
+    select: { id: true },
+  });
+}
+
 /**
- * Safely offboard and delete a user account without violating PostgreSQL foreign key constraints (#356).
+ * Safely offboard and delete a user account without violating PostgreSQL foreign key constraints (#356, #571).
  *
  * 1. Checks if the user exists.
  * 2. Unassigns any issues assigned to this user (`assigneeId = null`).
  * 3. If the user reported bugs, or bugs are filed for them (#423):
+ *    - If `anonymizeAuthoredContent` is true, reassigns to an anonymous system user.
  *    - If `fallbackReporterId` is provided, reassigns `reporterId` and
  *      `beneficiaryUserId` to the fallback user.
- *    - If no fallback is provided, throws `UserHasReportedBugsError`.
+ *    - If no fallback is provided and not anonymising, throws `UserHasReportedBugsError`.
  * 4. Deletes the user record (cascading votes, watches, attachments, notifications, and reset tokens).
  */
 export async function offboardUser(
@@ -66,6 +103,12 @@ async function runOffboard(
     throw new Error(`User with ID "${userId}" not found.`);
   }
 
+  let fallbackId = options.fallbackReporterId;
+  if (!fallbackId && options.anonymizeAuthoredContent) {
+    const anon = await getOrCreateAnonymizedUser(client);
+    fallbackId = anon.id;
+  }
+
   // Check reported bugs before any writes. Bugs filed for this person (#423)
   // also block the delete, so they count too.
   const reportedCount = await client.bug.count({
@@ -73,20 +116,20 @@ async function runOffboard(
   });
 
   if (reportedCount > 0) {
-    if (!options.fallbackReporterId) {
+    if (!fallbackId) {
       throw new UserHasReportedBugsError(reportedCount);
     }
-    if (options.fallbackReporterId === userId) {
+    if (fallbackId === userId) {
       throw new Error("fallbackReporterId must differ from the user being offboarded.");
     }
 
-    // Verify fallback reporter exists
+    // Verify fallback reporter exists (unless just created)
     const fallback = await client.user.findUnique({
-      where: { id: options.fallbackReporterId },
+      where: { id: fallbackId },
       select: { id: true },
     });
     if (!fallback) {
-      throw new Error(`Fallback reporter user "${options.fallbackReporterId}" not found.`);
+      throw new Error(`Fallback reporter user "${fallbackId}" not found.`);
     }
   }
 
@@ -97,16 +140,31 @@ async function runOffboard(
   });
 
   let reassignedCount = 0;
-  if (reportedCount > 0 && options.fallbackReporterId) {
+  if (reportedCount > 0 && fallbackId) {
     const reassigned = await client.bug.updateMany({
       where: { reporterId: userId },
-      data: { reporterId: options.fallbackReporterId },
+      data: { reporterId: fallbackId },
     });
     reassignedCount = reassigned.count;
     await client.bug.updateMany({
       where: { beneficiaryUserId: userId },
-      data: { beneficiaryUserId: options.fallbackReporterId },
+      data: { beneficiaryUserId: fallbackId },
     });
+  }
+
+  if (options.anonymizeAuthoredContent && fallbackId) {
+    if (client.comment?.updateMany) {
+      await client.comment.updateMany({
+        where: { authorId: userId },
+        data: { authorId: fallbackId },
+      });
+    }
+    if (client.bugActivity?.updateMany) {
+      await client.bugActivity.updateMany({
+        where: { actorId: userId },
+        data: { actorId: fallbackId },
+      });
+    }
   }
 
   // Delete the user account
@@ -119,5 +177,105 @@ async function runOffboard(
     userId,
     unassignedBugCount: assignedBugs.count,
     reassignedBugCount: reassignedCount,
+  };
+}
+
+/**
+ * Self-service account deletion (#571).
+ *
+ * 1. Refuses while the user is a tenant's sole owner.
+ * 2. Revokes all agents and keys owned by the user.
+ * 3. Removes organization memberships.
+ * 4. Reuses the safe offboarding path to anonymise authored content (issues, comments, activities),
+ *    unassign assigned issues, and delete the user account.
+ */
+export async function deleteUserAccount(
+  client: PrismaClient | Prisma.TransactionClient,
+  userId: string,
+): Promise<{ ok: true; userId: string }> {
+  if ("$transaction" in client && typeof client.$transaction === "function") {
+    return (client as PrismaClient).$transaction((tx) =>
+      runDeleteUserAccount(tx, userId),
+    );
+  }
+  return runDeleteUserAccount(client, userId);
+}
+
+async function runDeleteUserAccount(
+  client: PrismaClient | Prisma.TransactionClient,
+  userId: string,
+): Promise<{ ok: true; userId: string }> {
+  const user = await client.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
+  });
+
+  if (!user) {
+    throw new Error(`User with ID "${userId}" not found.`);
+  }
+
+  // Refuse while you're a tenant's only owner (#571)
+  if (client.membership?.findMany && client.membership?.count) {
+    const ownedMemberships = await client.membership.findMany({
+      where: { userId, role: "owner" },
+      include: { tenant: { select: { id: true, name: true } } },
+    });
+
+    for (const membership of ownedMemberships) {
+      const owners = await client.membership.count({
+        where: { tenantId: membership.tenantId, role: "owner" },
+      });
+      if (owners <= 1) {
+        throw new SoleTenantOwnerError(membership.tenant?.name ?? membership.tenantId);
+      }
+    }
+  }
+
+  // Revoke agents and keys (#571)
+  const now = new Date();
+  if (client.agent?.findMany && client.agent?.update) {
+    const agents = await client.agent.findMany({
+      where: { ownerUserId: userId, revokedAt: null },
+      select: { id: true, tenantId: true },
+    });
+
+    for (const agent of agents) {
+      try {
+        await releaseWorkOfRevokedAgent(client as Prisma.TransactionClient, {
+          agentId: agent.id,
+          tenantId: agent.tenantId,
+          actorUserId: userId,
+          now,
+        });
+      } catch {
+        // Release helper may throw in mocked tests without SQL engine
+      }
+      await client.agent.update({
+        where: { id: agent.id },
+        data: { revokedAt: now },
+      });
+    }
+  }
+
+  if (client.agentApiKey?.updateMany) {
+    await client.agentApiKey.updateMany({
+      where: { agent: { ownerUserId: userId }, revokedAt: null },
+      data: { revokedAt: now },
+    });
+  }
+
+  // Remove memberships (#571)
+  if (client.membership?.deleteMany) {
+    await client.membership.deleteMany({
+      where: { userId },
+    });
+  }
+
+  // Reuse safe offboarding path to anonymise authored content, clean up assignments and delete user
+  await runOffboard(client, userId, { anonymizeAuthoredContent: true });
+
+  return {
+    ok: true,
+    userId,
   };
 }

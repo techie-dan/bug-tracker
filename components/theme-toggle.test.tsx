@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setThemeAction } from "@/app/actions/settings";
-import { ThemeToggle, AccountThemeSelector, applyThemeClient } from "./theme-toggle";
+import { ThemePreference, ThemeToggle, AccountThemeSelector, applyThemeClient } from "./theme-toggle";
 
 vi.mock("@/app/actions/settings", () => ({
   setThemeAction: vi.fn(),
@@ -39,6 +40,29 @@ describe("applyThemeClient (#659)", () => {
 });
 
 describe("ThemeToggle (#659)", () => {
+  it("server markup follows the saved theme, not the device", () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    document.documentElement.removeAttribute("data-theme");
+    const systemHtml = renderToString(
+      <ThemePreference theme="system">
+        <ThemeToggle />
+      </ThemePreference>,
+    );
+    expect(systemHtml).toContain("Switch to dark mode");
+
+    document.documentElement.setAttribute("data-theme", "dark");
+    const darkHtml = renderToString(
+      <ThemePreference theme="dark">
+        <ThemeToggle />
+      </ThemePreference>,
+    );
+    expect(darkHtml).toContain("Switch to light mode");
+  });
+
   it("renders with accessible button label", () => {
     render(<ThemeToggle />);
     const button = screen.getByTestId("theme-toggle");

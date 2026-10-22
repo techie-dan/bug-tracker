@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_REWARDED_REVIEWERS,
+  confirmationReviewerSourceKey,
+  CONFIRMATION_REVIEWER_POINTS,
+  diminishedReviewerPoints,
+  DUPLICATE_MARKER_POINTS,
+  TRIAGER_CLEAR_POINTS,
   pointSourceKey,
   pointsProgress,
   REPORTER_POINTS,
   REVIEWER_POINTS,
+  reviewerPointsAt,
   solverPoints,
   TARGET_POINTS,
-  TARGET_SOLVED_TASKS,
 } from "./rules";
 
 describe("point rules (#428)", () => {
@@ -21,9 +25,20 @@ describe("point rules (#428)", () => {
   it("has the reporter, reviewer and target numbers from the epic", () => {
     expect(REPORTER_POINTS).toBe(5);
     expect(REVIEWER_POINTS).toBe(10);
-    expect(MAX_REWARDED_REVIEWERS).toBe(2);
+    expect(CONFIRMATION_REVIEWER_POINTS).toBe(3);
+    expect(TRIAGER_CLEAR_POINTS).toBe(1);
+    expect(DUPLICATE_MARKER_POINTS).toBe(5);
     expect(TARGET_POINTS).toBe(500);
-    expect(TARGET_SOLVED_TASKS).toBe(20);
+  });
+
+  it("pays every later reviewer less than the reviewer before them", () => {
+    expect(reviewerPointsAt(0, 5)).toBe(5);
+    expect(reviewerPointsAt(1, 5)).toBe(diminishedReviewerPoints(5));
+    expect(reviewerPointsAt(1, 5)).toBe(3);
+    expect(reviewerPointsAt(2, 5)).toBe(1);
+    expect(reviewerPointsAt(8, 5)).toBe(1);
+    expect([10, 7, 4, 2, 1, 1]).toEqual([0, 1, 2, 3, 4, 5].map((index) => reviewerPointsAt(index, 10)));
+    expect(diminishedReviewerPoints(1)).toBe(1);
   });
 
   it("builds one source key per role, issue and person", () => {
@@ -31,15 +46,16 @@ describe("point rules (#428)", () => {
     expect(pointSourceKey("reporter", "bug-1", "user-1")).toBe("reporter:bug-1:user-1");
     expect(pointSourceKey("reviewer", "bug-1", "user-1")).toBe("reviewer:bug-1:user-1");
     expect(pointSourceKey("solver", "bug-1", "user-2")).not.toBe(pointSourceKey("solver", "bug-1", "user-1"));
+    expect(confirmationReviewerSourceKey("bug-1", "user-1")).toBe("reviewer-confirm:bug-1:user-1");
+    expect(confirmationReviewerSourceKey("bug-1", "user-1")).not.toBe(pointSourceKey("reviewer", "bug-1", "user-1"));
   });
 
-  describe("progress toward 500 points and 20 solved tasks", () => {
+  describe("progress toward 500 points", () => {
     it("starts at zero", () => {
       expect(pointsProgress(0, 0)).toEqual({
         points: 0,
         solvedTasks: 0,
         pointsPercent: 0,
-        solvedPercent: 0,
         targetMet: false,
       });
     });
@@ -47,25 +63,22 @@ describe("point rules (#428)", () => {
     it("reports partial progress", () => {
       const progress = pointsProgress(250, 5);
       expect(progress.pointsPercent).toBe(50);
-      expect(progress.solvedPercent).toBe(25);
+      expect(progress.solvedTasks).toBe(5);
       expect(progress.targetMet).toBe(false);
     });
 
-    it("is not met with 500 points but fewer than 20 solved tasks", () => {
-      // Nine critical fixes are 540 points, but the 20-task gate still holds.
-      const progress = pointsProgress(540, 9);
+    it("is met at 500 points with no solved tasks", () => {
+      const progress = pointsProgress(500, 0);
       expect(progress.pointsPercent).toBe(100);
-      expect(progress.targetMet).toBe(false);
+      expect(progress.targetMet).toBe(true);
     });
 
-    it("is not met with 20 solved tasks but fewer than 500 points", () => {
-      // Twenty low-severity fixes are only 300 points.
+    it("is not met below 500 points", () => {
       expect(pointsProgress(300, 20).targetMet).toBe(false);
     });
 
-    it("is met once both targets are reached", () => {
-      expect(pointsProgress(500, 20).targetMet).toBe(true);
-      expect(pointsProgress(800, 25)).toMatchObject({ pointsPercent: 100, solvedPercent: 100, targetMet: true });
+    it("stays met above 500 points", () => {
+      expect(pointsProgress(800, 25)).toMatchObject({ pointsPercent: 100, targetMet: true });
     });
 
     it("never shows a negative percentage after a correction", () => {

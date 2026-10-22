@@ -45,7 +45,8 @@ vi.mock("@/lib/roles", () => ({
   isSuperAdmin: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock("@/lib/ticket-deletion", () => ({
+vi.mock("@/lib/ticket-deletion", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ticket-deletion")>()),
   canDeleteTicket: vi.fn().mockReturnValue(false),
 }));
 
@@ -104,7 +105,6 @@ const mockDb = vi.hoisted(() => ({
     findMany: vi.fn().mockResolvedValue([]),
     findFirst: vi.fn().mockResolvedValue(null),
   },
-  issueWatch: { findUnique: vi.fn().mockResolvedValue(null) },
   attachment: { findMany: vi.fn().mockResolvedValue([]) },
   bugRevision: { findFirst: vi.fn().mockResolvedValue(null) },
   milestone: { findMany: vi.fn().mockResolvedValue([]) },

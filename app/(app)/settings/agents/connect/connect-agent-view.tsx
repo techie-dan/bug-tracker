@@ -11,7 +11,7 @@ import {
   type ConnectionStatusResult,
 } from "./actions";
 
-type TabId = "claude" | "chatgpt" | "script";
+type TabId = "claude" | "chatgpt" | "script" | "mcp";
 type ScriptLang = "node" | "python";
 
 export function ConnectAgentView({
@@ -51,14 +51,18 @@ export function ConnectAgentView({
       ? templates.claude
       : activeTab === "chatgpt"
         ? templates.chatgpt
-        : scriptLang === "node"
-          ? templates.node
-          : templates.python;
+        : activeTab === "mcp"
+          ? templates.mcp
+          : scriptLang === "node"
+            ? templates.node
+            : templates.python;
 
   const currentFilename =
     activeTab === "claude" || activeTab === "chatgpt"
       ? "prompt"
-      : scriptLang === "node"
+      : activeTab === "mcp"
+        ? "claude_desktop_config.json"
+        : scriptLang === "node"
         ? "agent.mjs"
         : "agent.py";
 
@@ -165,6 +169,21 @@ export function ConnectAgentView({
             >
               Script (Node & Python)
             </button>
+            <button
+              role="tab"
+              id="tab-mcp"
+              aria-controls="panel-mcp"
+              aria-selected={activeTab === "mcp"}
+              onClick={() => setActiveTab("mcp")}
+              type="button"
+              className={`border-b-2 pb-3 transition-colors ${
+                activeTab === "mcp"
+                  ? "border-teal-600 font-semibold text-teal-800"
+                  : "border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900"
+              }`}
+            >
+              Claude Desktop (MCP)
+            </button>
           </div>
         </div>
 
@@ -243,6 +262,36 @@ export function ConnectAgentView({
                     Python 3
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "mcp" && (
+            <div
+              id="panel-mcp"
+              role="tabpanel"
+              aria-labelledby="tab-mcp"
+              className="space-y-3"
+            >
+              <div className="text-sm text-slate-600">
+                <ol className="list-decimal pl-5 space-y-1">
+                  <li>
+                    In a clone of this repo, pair once:{" "}
+                    <code className="font-mono text-xs text-slate-800">node scripts/ziki-agent.mjs pair --url {siteUrl}</code>
+                  </li>
+                  <li>
+                    Build the server:{" "}
+                    <code className="font-mono text-xs text-slate-800">cd packages/mcp-server &amp;&amp; pnpm install &amp;&amp; pnpm build</code>
+                  </li>
+                  <li>
+                    Paste the config below into{" "}
+                    <code className="font-mono text-xs text-slate-800">claude_desktop_config.json</code>, replacing the path with where you cloned the repo.
+                  </li>
+                  <li>Restart Claude Desktop. Ziki&apos;s tools appear in the tools menu.</li>
+                </ol>
+                <p className="mt-2 text-xs text-slate-500">
+                  The config holds no key. The server reads the one saved by <code className="font-mono">pair</code>.
+                </p>
               </div>
             </div>
           )}

@@ -43,6 +43,8 @@ export function isPublicPath(
     pathWithoutBase.startsWith("/join/") ||
     pathWithoutBase.startsWith("/api/auth") ||
     pathWithoutBase.startsWith("/api/health") ||
+    // GitHub calls this with an HMAC signature, not a session (#474).
+    pathWithoutBase === "/api/github/webhook" ||
     // The agent API (#427) authenticates every call with an agent key, not a
     // session; each route rejects a request without one.
     pathWithoutBase.startsWith("/api/v1/") ||

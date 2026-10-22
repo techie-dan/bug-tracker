@@ -15,7 +15,21 @@ CREATE TABLE IF NOT EXISTS "Milestone" (
     CONSTRAINT "Milestone_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS "Milestone_title_key" ON "Milestone"("title");
+-- Before #516, milestone titles were globally unique. Once Milestone.tenantId
+-- exists, the migration owns the tenant-scoped index; creating the old global
+-- one here would make two organizations unable to reuse a title.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'Milestone'
+      AND column_name = 'tenantId'
+  ) THEN
+    EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS "Milestone_title_key" ON "Milestone"("title")';
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS "Milestone_isClosed_dueDate_idx" ON "Milestone"("isClosed", "dueDate");
 
 ALTER TABLE "Bug" ADD COLUMN IF NOT EXISTS "milestoneId" TEXT;

@@ -19,7 +19,7 @@ export function UnwatchButton({ bugId, label }: { bugId: string; label: string }
       variant="ghost"
       disabled={pending}
       aria-label={`Unwatch ${label}`}
-      className="px-2.5 py-1 text-xs text-slate-500 hover:text-slate-800"
+      className="min-h-11 px-3 text-xs text-slate-500 hover:text-slate-800 sm:min-h-0 sm:px-2.5 sm:py-1"
       onClick={() =>
         startTransition(async () => {
           const result = await setWatchingAction(bugId, false);

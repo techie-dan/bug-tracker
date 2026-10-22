@@ -6,10 +6,12 @@ import { isTenantAdmin } from "@/lib/agents/membership";
 import { IssueApiError } from "@/lib/agent-api/issues";
 import { isConfirmed } from "@/lib/agent-api/validation";
 import { publish } from "@/lib/agent-api/events";
-import { MAX_ACTIVE_CLAIMS } from "@/lib/agent-api/claim";
+import { workflowFor } from "@/lib/workflow";
 import { isOfferExpired } from "@/lib/agent-api/offer";
 import { assertRedesignOpen } from "@/lib/redesigns";
+import { deliveryDeadline, deliveryWindowMinutes } from "@/lib/claim-deadline";
 import { assigneeChangedSummary, statusChangedSummary } from "@/lib/activity-log";
+import { WORK_READINESS_VOTE_THRESHOLD } from "@/lib/ticket-assignment";
 import { ensureWatching } from "@/lib/watch";
 import type { AppRole } from "@/lib/roles";
 
@@ -48,17 +50,20 @@ export async function placeBid(caller: AgentContext, projectId: string, bugId: s
     if (!locked.length) throw new IssueApiError(404, "Issue not found in this project.");
     const bug = await tx.bug.findFirst({
       where: { id: bugId, tenantId: caller.tenantId, projectId, isDeleted: false },
-      select: { id: true, projectId: true, status: true },
+      select: { id: true, projectId: true, status: true, voteCount: true },
     });
     if (!bug) throw new IssueApiError(404, "Issue not found in this project.");
     if (bug.status !== "open") throw new IssueApiError(409, "Only open issues can take bids.");
-    if (!await isConfirmed(bugId, tx)) throw new IssueApiError(409, "The issue must be confirmed before an agent can bid.");
+    if (!await isConfirmed(bugId, tx) || bug.voteCount < WORK_READINESS_VOTE_THRESHOLD) {
+      throw new IssueApiError(409, "This is still an idea. Reviewers must accept it, and it needs at least 3 upvotes, before it can be passed on.");
+    }
     await assertRedesignOpen(bugId, tx);
     await competingClaim(tx, bugId);
     const activeClaims = await tx.issueClaim.count({
       where: { beneficiaryUserId: caller.ownerId, status: "active", releasedAt: null, bug: { tenantId: caller.tenantId, projectId } },
     });
-    if (activeClaims >= MAX_ACTIVE_CLAIMS) throw new IssueApiError(409, "This person already has the maximum number of active tasks.");
+    const { maxActiveClaims } = await workflowFor(projectId, tx);
+    if (activeClaims >= maxActiveClaims) throw new IssueApiError(409, "This person already has the maximum number of active tasks.");
 
     const existing = await tx.issueBid.findUnique({ where: { bugId_agentId: { bugId, agentId: caller.agentId } } });
     if (existing?.awardedAt) throw new IssueApiError(409, "This bid was already awarded.");
@@ -86,10 +91,10 @@ export async function placeBid(caller: AgentContext, projectId: string, bugId: s
 export async function listBids(caller: AgentContext, projectId: string, bugId: string) {
   const bug = await prisma.bug.findFirst({
     where: { id: bugId, tenantId: caller.tenantId, projectId, isDeleted: false },
-    select: { id: true },
+    select: { id: true, areaId: true },
   });
   if (!bug) throw new IssueApiError(404, "Issue not found in this project.");
-  return prisma.issueBid.findMany({
+  const bids = await prisma.issueBid.findMany({
     where: openBidWhere(bugId),
     orderBy: { createdAt: "asc" },
     select: {
@@ -98,9 +103,15 @@ export async function listBids(caller: AgentContext, projectId: string, bugId: s
       beneficiaryUserId: true,
       note: true,
       createdAt: true,
-      agent: { select: { name: true } },
+      agent: { select: { name: true, areaPreferences: {
+        where: { projectAreaId: bug.areaId ?? "" },
+        select: { projectAreaId: true },
+      } } },
     },
   });
+  return bids
+    .map(({ agent, ...bid }) => ({ ...bid, agent, areaMatch: Boolean(bug.areaId && agent.areaPreferences.length) }))
+    .sort((a, b) => Number(b.areaMatch) - Number(a.areaMatch) || a.createdAt.getTime() - b.createdAt.getTime());
 }
 
 /** The bidding agent takes its own bid back. Awarded bids stay. */
@@ -158,11 +169,14 @@ export async function awardBid(actor: Actor, bidId: string) {
         where: { id: bidId },
         include: {
           beneficiary: { select: { name: true } },
-          bug: { select: { id: true, status: true, assigneeId: true, tenantId: true, projectId: true, reporterId: true, assignee: { select: { name: true } } } },
+          bug: { select: { id: true, status: true, assigneeId: true, tenantId: true, projectId: true, reporterId: true, severity: true, voteCount: true, assignee: { select: { name: true } } } },
         },
       });
       if (!fresh || fresh.withdrawnAt || fresh.awardedAt) throw new IssueApiError(409, "This bid is no longer open.");
       if (fresh.bug.status !== "open") throw new IssueApiError(409, "Only open issues can be awarded.");
+      if (!await isConfirmed(fresh.bugId, tx) || fresh.bug.voteCount < WORK_READINESS_VOTE_THRESHOLD) {
+        throw new IssueApiError(409, "This is still an idea. Reviewers must accept it, and it needs at least 3 upvotes, before it can be passed on.");
+      }
       if (fresh.bug.assigneeId && fresh.bug.assigneeId !== fresh.beneficiaryUserId) {
         throw new IssueApiError(409, "This issue is already assigned to someone else.");
       }
@@ -190,7 +204,8 @@ export async function awardBid(actor: Actor, bidId: string) {
       const activeClaims = await tx.issueClaim.count({
         where: { beneficiaryUserId: fresh.beneficiaryUserId, status: "active", releasedAt: null, bug: { tenantId: fresh.bug.tenantId, projectId: fresh.bug.projectId } },
       });
-      if (activeClaims >= MAX_ACTIVE_CLAIMS) throw new IssueApiError(409, "This person already has the maximum number of active tasks.");
+      const workflow = await workflowFor(fresh.bug.projectId, tx);
+      if (activeClaims >= workflow.maxActiveClaims) throw new IssueApiError(409, "This person already has the maximum number of active tasks.");
 
       const claim = await tx.issueClaim.create({
         data: {
@@ -200,6 +215,7 @@ export async function awardBid(actor: Actor, bidId: string) {
           status: "active",
           claimedAt: now,
           lastHeartbeatAt: now,
+          deliverBy: deliveryDeadline(now, deliveryWindowMinutes(fresh.bug.severity, workflow.deliveryMinutes)),
         },
       });
       const marked = await tx.issueBid.updateMany({

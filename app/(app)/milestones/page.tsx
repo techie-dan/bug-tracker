@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth-helpers";
 import { isAdmin } from "@/lib/roles";
+import { currentTenantIdFor } from "@/lib/tenant-context";
 import { loadMilestoneSummaries, type MilestoneSummary } from "@/lib/milestone-stats";
-import { dueDateValue } from "@/lib/milestones";
+import { dueDateValue, milestoneIssuesHref } from "@/lib/milestones";
 import { MilestoneProgressBar } from "@/components/milestone-progress";
 import { MilestoneDue } from "@/components/milestone-due";
 
@@ -21,7 +22,7 @@ function MilestoneCard({ m }: { m: MilestoneSummary }) {
         <MilestoneProgressBar progress={m.progress} label={m.title} />
       </div>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-        <Link href={`/issues?milestone=${m.id}`} className="font-medium text-teal-700 hover:underline">
+        <Link href={milestoneIssuesHref(m.id)} className="font-medium text-teal-700 hover:underline">
           All {m.progress.total} issue{m.progress.total === 1 ? "" : "s"}
         </Link>
         {/* No link: "left" spans open and in progress, which no single
@@ -37,7 +38,8 @@ function MilestoneCard({ m }: { m: MilestoneSummary }) {
 /** Every milestone with its progress (#289): "what's left for this release?" */
 export default async function MilestonesPage() {
   const user = await requireUser();
-  const all = await loadMilestoneSummaries();
+  const tenantId = await currentTenantIdFor(user.id);
+  const all = tenantId ? await loadMilestoneSummaries({ tenantId }) : [];
   const open = all.filter((m) => !m.isClosed);
   const closed = all.filter((m) => m.isClosed);
 

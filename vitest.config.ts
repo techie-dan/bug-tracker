@@ -8,7 +8,8 @@ export default defineConfig({
     // with a `@vitest-environment jsdom` (or happy-dom) docblock.
     environment: "node",
     include: ["**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["node_modules", ".next", "prisma", "e2e"],
+    // packages/* are standalone and run with their own dependencies (see ci.yml).
+    exclude: ["node_modules", ".next", "prisma", "e2e", "packages/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

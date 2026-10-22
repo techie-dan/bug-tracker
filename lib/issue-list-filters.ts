@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
-import { severities, statuses } from "@/lib/validations/issue";
-import { escapeSearchQuery, toSingleQueryParam } from "@/lib/search";
+import { severities } from "@/lib/validations/issue";
+import { statusFilterWhere } from "@/lib/issue-state";
+import { boundSearchTerm, escapeSearchQuery, toSingleQueryParam } from "@/lib/search";
 import { MILESTONE_PARAM, milestoneWhere, parseMilestoneFilter } from "@/lib/milestones";
 import {
   defaultSortFor,
@@ -11,6 +12,7 @@ import {
 import { parseTagFilter, tagTypeIds } from "@/lib/tag-filter";
 import { parseBugSort, type BugSortOption } from "@/lib/issues-sort";
 import { DUPLICATES_PARAM, duplicatesWhere, parseShowDuplicates } from "@/lib/duplicates";
+import { parseProjectAreaFilter, projectAreaFilterWhere, type ProjectAreaOption } from "@/lib/project-area-filter";
 
 export type RawParams = Record<string, string | string[] | undefined>;
 
@@ -42,6 +44,7 @@ export function parseBugListFilters({
   canSeeDeleted,
   tagTypes = [],
   platforms = [],
+  areas = [],
   milestones = [],
 }: {
   params: RawParams;
@@ -51,6 +54,8 @@ export function parseBugListFilters({
   tagTypes?: readonly TagType[];
   /** Known platforms, so an id that no longer exists falls back to no filter. */
   platforms?: readonly PlatformLike[];
+  /** Areas belonging to the active project, so stale/foreign ids mean no filter. */
+  areas?: readonly ProjectAreaOption[];
   /** Known milestones (#289); an unknown id means no filter, like platforms. */
   milestones?: readonly { id: string }[];
 }): ParsedBugFilters {
@@ -74,8 +79,12 @@ export function parseBugListFilters({
     where.typeId = { in: tagTypeIds(selectedTags, tagTypes) };
   }
 
-  if (status && (statuses as readonly string[]).includes(status)) {
-    where.status = status as Prisma.BugWhereInput["status"];
+  // The same status parsing the list uses, so the export understands the
+  // `finished` aggregate the stat grid links to (#685) and cannot drift from
+  // what is on screen.
+  const statusWhere = statusFilterWhere(status);
+  if (statusWhere !== undefined) {
+    where.status = statusWhere;
   }
   if (severity && (severities as readonly string[]).includes(severity)) {
     where.severity = severity as Prisma.BugWhereInput["severity"];
@@ -91,10 +100,12 @@ export function parseBugListFilters({
     where.categoryId = platform;
   }
 
+  Object.assign(where, projectAreaFilterWhere(parseProjectAreaFilter(params.area, areas)));
+
   Object.assign(where, milestoneWhere(parseMilestoneFilter(params[MILESTONE_PARAM], milestones)));
 
   if (q?.trim()) {
-    const escaped = escapeSearchQuery(q.trim());
+    const escaped = escapeSearchQuery(boundSearchTerm(q));
     where.OR = [
       { title: { contains: escaped, mode: "insensitive" } },
       { description: { contains: escaped, mode: "insensitive" } },
