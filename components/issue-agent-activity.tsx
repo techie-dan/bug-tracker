@@ -4,6 +4,23 @@ import { LocalTime } from "@/components/local-time";
 import { ClaimDeadline } from "@/components/claim-deadline";
 import { ExpandableText } from "@/components/expandable-text";
 
+function decisionKindLabel(kind: AgentDecision["kind"]): { icon: string; label: string; color: string } {
+  switch (kind) {
+    case "confirmed":
+      return { icon: "🔍", label: "Confirmed", color: "bg-blue-50 border-blue-200 text-blue-800" };
+    case "rejected":
+      return { icon: "❌", label: "Rejected", color: "bg-rose-50 border-rose-200 text-rose-800" };
+    case "claimed":
+      return { icon: "🚀", label: "Claimed", color: "bg-indigo-50 border-indigo-200 text-indigo-800" };
+    case "verdict":
+      return { icon: "✅", label: "Review", color: "bg-purple-50 border-purple-200 text-purple-800" };
+    case "accepted":
+      return { icon: "🟢", label: "Accepted", color: "bg-emerald-50 border-emerald-200 text-emerald-800" };
+    default:
+      return { icon: "📄", label: String(kind), color: "bg-slate-100 border-slate-200 text-slate-600" };
+  }
+}
+
 /**
  * What agents decided on one issue, in sentences (#448). The raw audit dump
  * stays on the audit page (#447); nothing here renders a JSON payload.
@@ -124,23 +141,36 @@ export function IssueAgentActivity({ decisions }: { decisions: ReadonlyArray<Age
         Agent decisions
       </h2>
       <ol className="relative mt-5 space-y-0 border-l border-slate-200 pl-4 sm:pl-5">
-        {ordered.map((decision) => (
-          <li key={decision.id} className="relative pb-5 last:pb-0">
-            <span
-              aria-hidden
-              className="absolute -left-[1.2rem] sm:-left-[1.45rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-teal-600"
-            />
-            <LocalTime className="text-xs text-slate-500" date={decision.at} />
-            <p className="mt-1 text-sm text-slate-800">{sentence(decision)}</p>
-            {decision.kind === "rejected" && decision.notes ? (
-              <ExpandableText maxLines={3} expandText="View more" collapseText="View less">
-                <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-slate-300 pl-3 text-sm text-slate-700">
-                  {decision.notes}
-                </blockquote>
-              </ExpandableText>
-            ) : null}
-          </li>
-        ))}
+        {ordered.map((decision) => {
+          const badge = decisionKindLabel(decision.kind);
+          return (
+            <li key={decision.id} className="relative pb-5 last:pb-0">
+              <span
+                aria-hidden
+                className={`absolute -left-[1.2rem] sm:-left-[1.45rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-white ${
+                  badge.color
+                }`}
+              />
+              <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                <LocalTime className="text-xs text-slate-500" date={decision.at} />
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium border ${badge.color}`}
+                >
+                  <span>{badge.icon}</span>
+                  <span>{badge.label}</span>
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-slate-800">{sentence(decision)}</p>
+              {decision.kind === "rejected" && decision.notes ? (
+                <ExpandableText maxLines={3} expandText="View more" collapseText="View less">
+                  <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-slate-300 pl-3 text-sm text-slate-700">
+                    {decision.notes}
+                  </blockquote>
+                </ExpandableText>
+              ) : null}
+            </li>
+          );
+        })}
       </ol>
     </section>
   );

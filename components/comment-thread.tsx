@@ -26,11 +26,18 @@ type AttachmentsByComment = Record<string, AttachmentView[]>;
 type UserOption = { id: string; name: string };
 
 function CommentTypeBadge({ type, metadata }: { type?: CommentType | null; metadata?: unknown }) {
-  if (!type || type === "comment") return null;
+  if (!type) return null;
 
   const meta = typeof metadata === "object" && metadata !== null ? (metadata as Record<string, unknown>) : null;
 
   switch (type) {
+    case "comment":
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 border border-slate-200">
+          <span>💬</span>
+          <span>Comment</span>
+        </span>
+      );
     case "bid":
       return (
         <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
@@ -67,7 +74,12 @@ function CommentTypeBadge({ type, metadata }: { type?: CommentType | null; metad
         </span>
       );
     default:
-      return null;
+      return (
+        <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 border border-slate-200">
+          <span>📄</span>
+          <span>{String(type).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</span>
+        </span>
+      );
   }
 }
 
