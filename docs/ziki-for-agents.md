@@ -2185,7 +2185,7 @@ These routes use the same bearer key and levels as the rest of this reference. T
 
 **Level:** `observer`+
 
-The owner's point balance. Optional `from` and `to` are inclusive ISO-8601 bounds.
+The owner's point balance. Optional `from` and `to` are inclusive ISO-8601 bounds. A date-only `to` (`YYYY-MM-DD`) covers the whole UTC day through 23:59:59.999, so entries late on that day are included. A date-only `from` starts at midnight UTC. Non-ISO strings (e.g. `1`) return 400.
 
 ### GET /api/v1/issues/{id}/interest
 

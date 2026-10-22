@@ -87,6 +87,32 @@ describe("pointBalance (#618)", () => {
     ]);
   });
 
+  it("normalizes a date-only `to` to end-of-day UTC so late-day entries are included (#503)", async () => {
+    const db = dbWith({ points: 65, entries: 3 });
+    const from = new Date("2026-10-01T00:00:00.000Z");
+    const to = new Date("2026-10-20T23:59:59.999Z");
+
+    const balance = await pointBalance(db as never, {
+      tenantId: "tenant-zedu",
+      userId: "user-1",
+      from,
+      to: "2026-10-20",
+    });
+
+    expect(balance.period.from).toBe("2026-10-01T00:00:00.000Z");
+    expect(balance.period.to).toBe("2026-10-20T23:59:59.999Z");
+    const bounded = db.pointEntry.aggregate.mock.calls
+      .map((call) => call[0].where)
+      .filter((where) => where.createdAt !== undefined);
+    expect(bounded).toEqual([
+      {
+        tenantId: "tenant-zedu",
+        userId: "user-1",
+        createdAt: { gte: from, lte: to },
+      },
+    ]);
+  });
+
   it("starts at zero with no ledger rows", async () => {
     const db = dbWith({ points: null, entries: 0 });
     expect(await pointBalance(db as never, { tenantId: "t", userId: "u" })).toEqual({
