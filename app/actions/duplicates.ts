@@ -189,7 +189,7 @@ export async function findDuplicateCandidatesAction(
   };
   const where =
     ref && "number" in ref
-      ? { ...base, OR: [{ number: ref.number }, { title: { contains: text, mode: "insensitive" as const } }] }
+      ? { ...base, OR: [{ number: ref.number }, { title: { contains: escapeSearchQuery(text), mode: "insensitive" as const } }] }
       : ref && "id" in ref
         ? { ...base, id: ref.id }
         : text.length >= 2

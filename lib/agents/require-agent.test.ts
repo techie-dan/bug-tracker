@@ -74,6 +74,7 @@ describe("requireAgent (#427)", () => {
       tenantId: "tenant_zedu",
       level: "contributor",
       burst: false,
+      burstUntil: null,
       keyId: "key1",
       projectId: null,
       projectSlug: null,

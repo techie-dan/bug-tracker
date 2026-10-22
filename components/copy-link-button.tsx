@@ -30,17 +30,24 @@ export function CopyLinkButton({
 }) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
 
   async function copy() {
-    const ok = await copyText(url);
-    if (ok) {
-      toast(`Link to this ${label} copied.`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } else {
-      // Say what happened and hand over the link itself, rather than
-      // pretending: the person can still select it from the message.
-      toast(`Couldn't copy automatically. The link is: ${url}`, "error");
+    if (pending) return;
+    setPending(true);
+    try {
+      const ok = await copyText(url);
+      if (ok) {
+        toast(`Link to this ${label} copied.`);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } else {
+        // Say what happened and hand over the link itself, rather than
+        // pretending: the person can still select it from the message.
+        toast(`Couldn't copy automatically. The link is: ${url}`, "error");
+      }
+    } finally {
+      setPending(false);
     }
   }
 
@@ -48,6 +55,7 @@ export function CopyLinkButton({
     return (
       <button
         type="button"
+        disabled={pending}
         onClick={copy}
         aria-label={`Copy link to this ${label}`}
         title={`Copy link to this ${label}`}
@@ -61,6 +69,7 @@ export function CopyLinkButton({
   return (
     <button
       type="button"
+      disabled={pending}
       onClick={copy}
       className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 print:hidden"
     >

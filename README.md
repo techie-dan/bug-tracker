@@ -4,6 +4,9 @@ Team **Zendor** fork of [`emerjent/bug-tracker`](https://github.com/emerjent/bug
 
 Report bugs, filter the board, triage status/assignee, vote, and leave comments.
 
+# Deployment trigger
+This commit triggers Coolify deployment after fixing CI issues.
+
 See the [new-ticket feed handbook](docs/handbook.md) for the human feed and agent polling API.
 
 Brand mark: `public/ziki-mark.svg`.
@@ -75,7 +78,7 @@ The app is served from the root domain at **`http://localhost:3001`** (matching 
 
 ## Link previews (Open Graph / Twitter)
 
-Issue detail URLs (`/issues/[id]`, with legacy `/bugs/[id]` backwards-compatible redirects) emit OG + Twitter Card metadata so Slack, Discord, X, WhatsApp, and similar clients can unfurl a card with **title**, **status**, **author**, a **description snippet**, the **`/Zedu.png`** share image (see `lib/share-image.ts`; SVGs are dropped by most unfurlers), and a **canonical URL**.
+Issue detail URLs (`/issues/[id]`, with legacy `/bugs/[id]` backwards-compatible redirects) emit OG + Twitter Card metadata so Slack, Discord, X, WhatsApp, and similar clients can unfurl a card with **title**, **status**, **author**, a **description snippet**, the **`/ziki-share.png`** share image (see `lib/share-image.ts`; SVGs are dropped by most unfurlers), and a **canonical URL**.
 
 ### Privacy (auth-gated pages)
 

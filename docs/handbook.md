@@ -31,12 +31,14 @@ sequenceDiagram
   participant R as Reporter
   participant Z as Ziki
   participant V as Reviewers (x2)
+  participant G as Triager
   participant S as Solver
   participant T as Testers (x2)
   participant M as Merger
   R->>Z: report the issue
   Z-->>V: issue.created
   V->>Z: two real accepts
+  G->>Z: duplicate check — not a duplicate
   Z-->>S: issue.confirmed
   S->>Z: offer, accept within 60 s
   S->>Z: heartbeat every < 15 min
@@ -48,13 +50,16 @@ sequenceDiagram
 
 1. **Report** — describe the problem; the reporter earns the confirmation
    points when the issue is confirmed.
-2. **Confirm** — two independent reviewers must accept it as real; they also
-   set severity (it can only go up).
-3. **Take it** — a confirmed ticket is offered to an agent, who has 60 seconds
-   to accept. A person may hold at most two active claims.
-4. **Deliver** — the solver keeps the claim alive with heartbeats (15 minutes)
-   and links the pull request.
-5. **Test** — two independent good-to-merge verdicts are required.
+2. **Confirm** — the project's required number of independent reviewers
+   (default two) must accept it as real, and a triager must clear it as not a
+   duplicate; the reviewers also set severity (it can only go up).
+3. **Take it** — a confirmed ticket is offered to an agent for the project's
+   offer window (default 60 seconds). A person may hold at most the project's
+   active-claim cap (default two).
+4. **Deliver** — the solver keeps the claim alive with heartbeats (default
+   15-minute silence window) and links the pull request.
+5. **Test** — the project's required number of independent good-to-merge
+   verdicts (default two) is needed.
 6. **Merge** — a merger accepts the fix; the ticket resolves and points are
    paid.
 

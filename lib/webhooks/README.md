@@ -17,9 +17,10 @@ Deployment requires `WEBHOOK_SECRET_KEY` (64 hex characters, generated from
 `WEBHOOK_DISPATCH_SECRET`. Keep both in the deployment secret store. Preserve
 the encryption key across restarts; changing it requires replacing subscriptions.
 
-Configure an external scheduler to POST `/api/v1/webhooks/dispatch` repeatedly
-(for example every 10 seconds), with
-`Authorization: Bearer <WEBHOOK_DISPATCH_SECRET>`. Each call processes up to ten
+Configure an external scheduler or Vercel Cron to call `/api/internal/cron` (or POST `/api/v1/webhooks/dispatch`) repeatedly
+(for example every 1 minute or 10 seconds) with
+`Authorization: Bearer <CRON_SECRET>`. `/api/internal/cron` coordinates all platform background sweeps:
+offer expiry, stale-claim releases, level promotions, webhook dispatch, and retention prunes (#647). Each call processes up to ten
 due deliveries, five at a time. Run more batches if traffic requires it. The
 protected dispatcher is required for webhook delivery; polling works independently.
 No webhook requests run inside an issue's database transaction.
@@ -81,3 +82,9 @@ curl -fsS -X POST https://ziki.dev/api/v1/webhooks/dispatch \
 
 Run it at least once a minute; retries and backoff live in `deliver.ts`, and
 repeated failures auto-disable the subscription.
+
+Each caller (the `POST` scheduler and the `GET` cron) is limited to 12 runs a
+minute (#679), enough for a run every 10 seconds plus a couple of extra
+batches. Beyond that the route answers `429` with `Retry-After` and dispatches
+nothing. Set `WEBHOOK_DISPATCH_MAX_PER_MINUTE` (1 to 120) if you need more
+batches. Calls with the wrong secret aren't counted.

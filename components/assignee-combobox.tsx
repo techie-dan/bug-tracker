@@ -93,6 +93,11 @@ export function AssigneeCombobox({
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // An IME uses Enter and the arrow keys to commit or browse candidates.
+    // Acting on them here would pick an assignee mid-composition (#483), so
+    // leave every key alone until the composition ends. `keyCode === 229` is
+    // the fallback browsers report when `isComposing` is already false.
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();

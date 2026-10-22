@@ -5,6 +5,10 @@
     {
       "path": "/api/v1/webhooks/dispatch",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/cron",
+      "schedule": "* * * * *"
     }
   ]
 }

@@ -20,6 +20,8 @@ export const ALREADY_RESOLVED = "That dispute has already been resolved.";
 export const NOT_YOUR_ENTRY = "That points entry isn't yours.";
 export const NOBODY_TO_AWARD = "This issue has nobody to award: it has no assignee.";
 export const NO_ENTRY_ON_THIS_DISPUTE = "This dispute isn't about a points entry.";
+export const ALREADY_CORRECTED = "That points entry has already been corrected.";
+export const DISPUTE_ALREADY_OPEN = "An open dispute already exists for this entry.";
 
 export const disputeInputSchema = z
   .object({
@@ -96,8 +98,8 @@ export function missingAwardEntry(
 }
 
 /** A correction is a new row that reverses an entry; the original is never edited. */
-export function correctionSourceKey(disputeId: string): string {
-  return `correction:${disputeId}`;
+export function correctionSourceKey(pointEntryId: string): string {
+  return `undo:${pointEntryId}`;
 }
 
 /** Opens a dispute on an issue in the member's workspace. */
@@ -115,10 +117,17 @@ export async function openDispute(
 
   if (input.kind === "wrong") {
     const entry = await db.pointEntry.findFirst({
-      where: { id: input.pointEntryId, userId, tenantId },
-      select: { id: true },
+      where: { id: input.pointEntryId, userId, tenantId, bugId: bug.id },
+      select: { id: true, correctedAt: true },
     });
     if (!entry) return { ok: false, error: NOT_YOUR_ENTRY };
+    if (entry.correctedAt) return { ok: false, error: ALREADY_CORRECTED };
+
+    const existingDispute = await db.pointDispute.findFirst({
+      where: { pointEntryId: input.pointEntryId, status: "open" },
+      select: { id: true },
+    });
+    if (existingDispute) return { ok: false, error: DISPUTE_ALREADY_OPEN };
   }
 
   const dispute = await db.pointDispute.create({
@@ -185,6 +194,7 @@ export async function correctEntry(
       bugId: string | null;
       role: PointRole;
       points: number;
+      correctedAt?: Date | null;
     };
     resolvedById: string;
     note?: string | null;
@@ -196,6 +206,21 @@ export async function correctEntry(
     return { ok: false, error: NO_ENTRY_ON_THIS_DISPUTE };
   }
   if (entry.tenantId !== dispute.tenantId) return { ok: false, error: NOT_IN_WORKSPACE };
+  if (entry.correctedAt) return { ok: false, error: ALREADY_CORRECTED };
+
+  if (typeof db.pointEntry.findUnique === "function") {
+    const currentEntry = await db.pointEntry.findUnique({
+      where: { id: entry.id },
+      select: { correctedAt: true },
+    });
+    if (currentEntry?.correctedAt) return { ok: false, error: ALREADY_CORRECTED };
+  } else if (typeof db.pointEntry.findFirst === "function") {
+    const currentEntry = await db.pointEntry.findFirst({
+      where: { id: entry.id },
+      select: { correctedAt: true },
+    });
+    if (currentEntry?.correctedAt) return { ok: false, error: ALREADY_CORRECTED };
+  }
 
   await db.pointEntry.update({
     where: { id: entry.id },
@@ -207,7 +232,7 @@ export async function correctEntry(
     bugId: entry.bugId,
     role: entry.role,
     points: -entry.points,
-    sourceKey: correctionSourceKey(dispute.id),
+    sourceKey: correctionSourceKey(entry.id),
   });
   await db.pointDispute.update({
     where: { id: dispute.id },

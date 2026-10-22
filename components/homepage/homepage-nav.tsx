@@ -54,6 +54,12 @@ export function HomepageNav({ isSignedIn = false }: HomepageNavProps) {
               Workflows
             </a>
             <Link
+              href="/docs"
+              className="text-sm font-medium text-slate-600 transition-colors hover:text-slate-900"
+            >
+              Docs
+            </Link>
+            <Link
               href="/llms.txt"
               className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-mono font-medium text-slate-700 hover:bg-slate-200"
             >
@@ -156,6 +162,13 @@ export function HomepageNav({ isSignedIn = false }: HomepageNavProps) {
             >
               Workflows
             </a>
+            <Link
+              href="/docs"
+              onClick={() => setMobileMenuOpen(false)}
+              className="rounded-md px-3 py-2 text-base font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+            >
+              API Docs
+            </Link>
             <Link
               href="/llms.txt"
               onClick={() => setMobileMenuOpen(false)}

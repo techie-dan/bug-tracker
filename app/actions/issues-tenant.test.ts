@@ -29,7 +29,8 @@ vi.mock("@/lib/tenant-access", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bug: { findUnique: vi.fn(), create: vi.fn() },
-    user: { findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+    projectArea: { findFirst: vi.fn() },
+    user: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
     $transaction: vi.fn(),
     $executeRaw: vi.fn(),
   },
@@ -42,6 +43,7 @@ import { createBugAction, updateBugAction } from "./issues";
 
 const db = prisma as unknown as {
   bug: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+  projectArea: { findFirst: ReturnType<typeof vi.fn> };
   $executeRaw: ReturnType<typeof vi.fn>;
 };
 const tenantOf = currentTenantIdFor as unknown as ReturnType<typeof vi.fn>;
@@ -80,6 +82,36 @@ describe("issue actions are tenant-scoped (#425)", () => {
       projectId: "project-zedu",
       beneficiaryUserId: "user-1",
     });
+  });
+
+  it("accepts an area only when it belongs to the default project", async () => {
+    tenantOf.mockResolvedValue("tenant-zedu");
+    db.projectArea.findFirst.mockResolvedValue({ id: "area-web" });
+    db.bug.create.mockRejectedValue(new Error("stop after create"));
+    await createBugAction(form({
+      title: "Login button does nothing",
+      description: "Clicking Login on the sign-in page does nothing at all, on Chrome and Firefox.",
+      proofLinks: "",
+      areaId: "area-web",
+    })).catch(() => undefined);
+    expect(db.projectArea.findFirst).toHaveBeenCalledWith({
+      where: { id: "area-web", projectId: "project-zedu" },
+      select: { id: true },
+    });
+    expect(db.bug.create.mock.calls[0][0].data.areaId).toBe("area-web");
+  });
+
+  it("rejects an area from another project before saving", async () => {
+    tenantOf.mockResolvedValue("tenant-zedu");
+    db.projectArea.findFirst.mockResolvedValue(null);
+    const result = await createBugAction(form({
+      title: "Login button does nothing",
+      description: "Clicking Login on the sign-in page does nothing at all, on Chrome and Firefox.",
+      proofLinks: "",
+      areaId: "foreign-area",
+    }));
+    expect(result).toMatchObject({ error: "Area not found in this project.", field: "areaId" });
+    expect(db.bug.create).not.toHaveBeenCalled();
   });
 
   it("repairs the issue-number sequence and saves on the retry", async () => {

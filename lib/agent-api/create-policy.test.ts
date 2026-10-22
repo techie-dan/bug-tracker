@@ -166,6 +166,21 @@ describe("createIssueWithPolicy: similar issues (#441)", () => {
     expect(await createIssueWithPolicy(input())).toMatchObject({ status: 201 });
   });
 
+  it("retries trigram matching after a transient error", async () => {
+    db.$queryRaw
+      .mockRejectedValueOnce(new Error("temporary database error"))
+      .mockResolvedValueOnce([similarRow]);
+    db.bug.findMany.mockResolvedValue([]);
+
+    expect(await createIssueWithPolicy(input())).toMatchObject({ status: 201 });
+    expect(await createIssueWithPolicy(input({ idempotencyKey: "retry-key" }))).toMatchObject({
+      status: 409,
+      error: "similar_issues",
+    });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(db.bug.findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts acknowledgeSimilar from a query string too", () => {
     expect(isAcknowledged("true")).toBe(true);
     expect(isAcknowledged("1")).toBe(true);

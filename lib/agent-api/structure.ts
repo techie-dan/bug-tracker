@@ -183,8 +183,14 @@ export async function structureIssue(
 
   // Load available platforms and types
   const [categories, types] = await Promise.all([
-    prisma.category.findMany({ where: { isActive: true }, select: { id: true, name: true } }),
-    prisma.issueType.findMany({ where: { isActive: true }, select: { id: true, name: true } }),
+    prisma.category.findMany({
+      where: { tenantId: agent.tenantId, isActive: true },
+      select: { id: true, name: true },
+    }),
+    prisma.issueType.findMany({
+      where: { tenantId: agent.tenantId, isActive: true },
+      select: { id: true, name: true },
+    }),
   ]);
 
   const fullText = `${queryTitle} ${input.description || bug.description} ${input.actualBehavior || ""} ${input.stepsToReproduce || ""}`;

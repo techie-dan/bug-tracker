@@ -14,6 +14,7 @@ import { triageFieldsKey } from "@/lib/triage-options";
 
 type UserOption = { id: string; name: string; role: AppRole; image?: string | null };
 type CategoryOption = { id: string; name: string };
+type AreaOption = { id: string; name: string };
 type TypeOption = { id: string; name: string };
 type MilestoneOption = { id: string; title: string; isClosed: boolean };
 
@@ -23,6 +24,7 @@ type Draft = {
   typeId: string;
   severity: string;
   categoryId: string;
+  areaId: string;
   assigneeId: string;
   milestoneId: string;
 };
@@ -40,9 +42,11 @@ export function UpdateIssueForm({
   typeId,
   assigneeId,
   categoryId,
+  areaId,
   milestoneId,
   users,
   categories = [],
+  areas = [],
   types = [],
   milestones = [],
   canEditTriage = true,
@@ -53,10 +57,12 @@ export function UpdateIssueForm({
   typeId?: string | null;
   assigneeId: string | null;
   categoryId?: string | null;
+  areaId?: string | null;
   /** #289: the issue's milestone, if any. */
   milestoneId?: string | null;
   users: UserOption[];
   categories?: CategoryOption[];
+  areas?: AreaOption[];
   types?: TypeOption[];
   /** Open milestones, plus the current one even if it was since closed. */
   milestones?: MilestoneOption[];
@@ -65,6 +71,12 @@ export function UpdateIssueForm({
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  const markSaved = (isSaved: boolean) => {
+    setSaved(isSaved);
+    setSavedAt(isSaved ? new Date() : null);
+  };
   const [note, setNote] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -74,6 +86,7 @@ export function UpdateIssueForm({
     typeId: typeId ?? "",
     severity,
     categoryId: categoryId ?? "",
+    areaId: areaId ?? "",
     assigneeId: assigneeId ?? "",
     milestoneId: milestoneId ?? "",
   };
@@ -96,7 +109,7 @@ export function UpdateIssueForm({
   // #316: only a move into resolved/closed can carry a note.
   const asksForNote = draft.status !== status && isFinishedStatus(draft.status);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
-    setSaved(false);
+    markSaved(false);
     setDraft((d) => ({ ...d, [key]: value }));
   };
 
@@ -119,7 +132,7 @@ export function UpdateIssueForm({
       onSubmit={(event) => {
         event.preventDefault();
         setError(null);
-        setSaved(false);
+        markSaved(false);
         const formData = new FormData();
         formData.set("status", draft.status);
         if (asksForNote) formData.set("resolutionNote", note);
@@ -127,6 +140,7 @@ export function UpdateIssueForm({
           formData.set("typeId", draft.typeId);
           formData.set("severity", draft.severity);
           formData.set("categoryId", draft.categoryId);
+          formData.set("areaId", draft.areaId);
           formData.set("assigneeId", draft.assigneeId);
           formData.set("milestoneId", draft.milestoneId);
         } else if (assigneeId) {
@@ -137,7 +151,7 @@ export function UpdateIssueForm({
           if (result.error) {
             setError(result.error);
           } else {
-            setSaved(true);
+            markSaved(true);
             setNote("");
           }
         });
@@ -149,7 +163,7 @@ export function UpdateIssueForm({
       {/* Remount the fields when the saved values change so they never show
           (and re-submit) stale values after a save (#261). */}
       <div
-        key={triageFieldsKey({ status, severity, typeId, categoryId, assigneeId, milestoneId })}
+        key={triageFieldsKey({ status, severity, typeId, categoryId, areaId, assigneeId, milestoneId })}
         className={
           canEditTriage
             ? "grid gap-3 sm:grid-cols-4"
@@ -239,6 +253,21 @@ export function UpdateIssueForm({
               </select>
             </div>
             <div>
+              <label htmlFor="areaId" className="mb-1 block text-xs font-medium text-slate-700">
+                Area
+              </label>
+              <select
+                id="areaId"
+                name="areaId"
+                value={draft.areaId}
+                onChange={(event) => set("areaId", event.target.value)}
+                className={selectClass}
+              >
+                <option value="">None</option>
+                {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
+              </select>
+            </div>
+            <div>
               <label
                 htmlFor="milestoneId"
                 className="mb-1 block text-xs font-medium text-slate-700"
@@ -311,7 +340,7 @@ export function UpdateIssueForm({
             maxLength={RESOLUTION_NOTE_MAX}
             value={note}
             onChange={(event) => {
-              setSaved(false);
+              markSaved(false);
               setNote(event.target.value);
             }}
             placeholder="What happened? e.g. Fixed in the 2.4 release. Clear your cache if you still see it."
@@ -331,7 +360,16 @@ export function UpdateIssueForm({
 
       {/* Announced, so the result of a save isn't visual-only. */}
       <p role="status" aria-live="polite" className="text-sm text-emerald-700 empty:hidden">
-        {saved ? "Saved." : ""}
+        {saved ? (
+          <>
+            Saved.{" "}
+            {savedAt ? (
+              <span className="text-xs text-emerald-600">
+                {savedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}
+              </span>
+            ) : null}
+          </>
+        ) : ""}
       </p>
 
       <div className="flex flex-wrap items-center gap-3">

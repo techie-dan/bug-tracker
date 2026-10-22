@@ -29,6 +29,7 @@ const COLUMNS = [
   "severity",
   "type",
   "platform",
+  "area",
   "reporter",
   "assignee",
   "votes",
@@ -36,6 +37,13 @@ const COLUMNS = [
   "created_at",
   "updated_at",
 ] as const;
+
+type ExportFormat = "csv" | "json";
+
+/** `?format=json` gives JSON (#664); anything else keeps the CSV default. */
+function exportFormat(params: URLSearchParams): ExportFormat {
+  return params.get("format") === "json" ? "json" : "csv";
+}
 
 export async function GET(request: NextRequest) {
   const session = await auth();
@@ -45,18 +53,24 @@ export async function GET(request: NextRequest) {
   const user = await requireUser();
   const access = await currentTenantAccess(user.id, user.role);
 
+  const format = exportFormat(request.nextUrl.searchParams);
   const params: RawParams = Object.fromEntries(
     request.nextUrl.searchParams.entries(),
   );
 
   const tenantId = await currentTenantIdFor(user.id);
   const projectId = await activeProjectIdFor(prisma, tenantId);
-  const [tagTypes, platforms, milestones] = await Promise.all([
-    getIssueTypes(),
+  const [tagTypes, platforms, milestones, areas] = await Promise.all([
+    getIssueTypes(tenantId),
     // Every platform in this organization, active or not: a filter on a
     // platform that was since deactivated still has to resolve.
     getPlatforms(tenantId),
-    prisma.milestone.findMany({ select: { id: true } }),
+    tenantId
+      ? prisma.milestone.findMany({ where: { tenantId }, select: { id: true } })
+      : Promise.resolve([]),
+    params.area && projectId
+      ? prisma.projectArea.findMany({ where: { projectId }, select: { id: true, name: true } })
+      : Promise.resolve([]),
   ]);
 
   const { where: filters, sort, mine } = parseBugListFilters({
@@ -67,6 +81,7 @@ export async function GET(request: NextRequest) {
     canSeeDeleted: canDeleteTicket(user.role, access.membershipRole),
     tagTypes,
     platforms,
+    areas,
     milestones,
   });
 
@@ -85,9 +100,12 @@ export async function GET(request: NextRequest) {
 
   // One batch per pull, so the stream respects backpressure: a slow client
   // stops us fetching rather than letting the whole table pile up in memory.
+  // JSON is one object streamed in pieces, so the closing part has to be
+  // written however the export ends, or the file will not parse.
+  const json = format === "json";
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(csvRow(COLUMNS)));
+      controller.enqueue(encoder.encode(json ? `{"issues":[` : csvRow(COLUMNS)));
     },
     async pull(controller) {
       if (done) return;
@@ -111,12 +129,35 @@ export async function GET(request: NextRequest) {
             updatedAt: true,
             type: { select: { name: true } },
             category: { select: { name: true } },
+            area: { select: { name: true } },
             reporter: { select: { name: true } },
             assignee: { select: { name: true } },
           },
         });
 
-        for (const bug of batch) {
+        batch.forEach((bug, i) => {
+          if (json) {
+            // Raw status and severity values, which code can match on; the
+            // CSV keeps the labels people read in a spreadsheet.
+            const issue: Record<(typeof COLUMNS)[number], unknown> = {
+              id: bug.id,
+              title: bug.title,
+              status: bug.status,
+              severity: bug.severity,
+              type: bug.type?.name ?? null,
+              platform: bug.category?.name ?? null,
+              area: bug.area?.name ?? null,
+              reporter: bug.reporter.name,
+              assignee: bug.assignee?.name ?? null,
+              votes: bug.voteCount,
+              boosted: bug.isBoosted,
+              created_at: bug.createdAt,
+              updated_at: bug.updatedAt,
+            };
+            const comma = sent + i > 0 ? "," : "";
+            controller.enqueue(encoder.encode(comma + JSON.stringify(issue)));
+            return;
+          }
           controller.enqueue(
             encoder.encode(
               csvRow([
@@ -126,6 +167,7 @@ export async function GET(request: NextRequest) {
                 severityLabel[bug.severity],
                 bug.type?.name,
                 bug.category?.name,
+                bug.area?.name,
                 bug.reporter.name,
                 bug.assignee?.name,
                 bug.voteCount,
@@ -135,24 +177,27 @@ export async function GET(request: NextRequest) {
               ]),
             ),
           );
-        }
+        });
 
         sent += batch.length;
         cursor = batch.at(-1)?.id;
 
         if (batch.length === 0 || batch.length < PAGE || sent >= EXPORT_LIMIT) {
           done = true;
-          if (sent >= EXPORT_LIMIT) {
-            const total = await prisma.bug.count({ where });
-            if (total > sent) {
-              // A truncated spreadsheet that looks complete is worse than no
-              // spreadsheet, so say so inside the file itself.
-              controller.enqueue(
-                encoder.encode(
-                  `# Truncated at ${EXPORT_LIMIT} of ${total} issues. Narrow the filter and export again.${CSV_EOL}`,
-                ),
-              );
-            }
+          const total = sent >= EXPORT_LIMIT ? await prisma.bug.count({ where }) : sent;
+          if (json) {
+            const truncated = total > sent;
+            controller.enqueue(
+              encoder.encode(`],"truncated":${truncated}${truncated ? `,"total":${total}` : ""}}`),
+            );
+          } else if (total > sent) {
+            // A truncated spreadsheet that looks complete is worse than no
+            // spreadsheet, so say so inside the file itself.
+            controller.enqueue(
+              encoder.encode(
+                `# Truncated at ${EXPORT_LIMIT} of ${total} issues. Narrow the filter and export again.${CSV_EOL}`,
+              ),
+            );
           }
           controller.close();
         }
@@ -162,7 +207,11 @@ export async function GET(request: NextRequest) {
         // only honest signal left is a line inside it.
         done = true;
         controller.enqueue(
-          encoder.encode(`# Export failed partway through. Please try again.${CSV_EOL}`),
+          encoder.encode(
+            json
+              ? `],"error":"Export failed partway through. Please try again."}`
+              : `# Export failed partway through. Please try again.${CSV_EOL}`,
+          ),
         );
         controller.close();
       }
@@ -172,8 +221,8 @@ export async function GET(request: NextRequest) {
   const stamp = new Date().toISOString().slice(0, 10);
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="zedu-issues-${stamp}.csv"`,
+      "Content-Type": json ? "application/json; charset=utf-8" : "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="zedu-issues-${stamp}.${format}"`,
       "Cache-Control": "no-store",
     },
   });

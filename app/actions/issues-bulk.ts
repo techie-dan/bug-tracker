@@ -21,6 +21,7 @@ import { ensureWatching } from "@/lib/watch";
 import { notifyLater } from "@/lib/notify";
 import type { NotificationEvent } from "@/lib/notifications";
 import type { Severity, Status } from "@prisma/client";
+import { publish } from "@/lib/agent-api/events";
 import { issueChangePayload, publishWebEvent } from "@/lib/agent-api/web-events";
 
 export type BulkResult = {
@@ -52,18 +53,21 @@ export async function bulkUpdateBugsAction(
   if (!parsed.ok) return { error: parsed.error };
   const { ids, change } = parsed;
 
+  const tenantId = await currentTenantIdFor(user.id);
+
   // Referenced rows are checked once for the whole batch rather than once
   // per issue, and before the transaction opens.
   let inactiveTypeId: string | undefined;
   if (typeof change.typeId === "string") {
-    const type = await prisma.issueType.findUnique({
-      where: { id: change.typeId },
-      select: { id: true, isActive: true },
-    });
+    const type = tenantId
+      ? await prisma.issueType.findUnique({
+          where: { id_tenantId: { id: change.typeId, tenantId } },
+          select: { id: true, isActive: true },
+        })
+      : null;
     if (!type) return { error: "Issue type not found" };
     if (!type.isActive) inactiveTypeId = type.id;
   }
-  const tenantId = await currentTenantIdFor(user.id);
   if (typeof change.categoryId === "string") {
     const category = tenantId
       ? await prisma.category.findFirst({
@@ -165,10 +169,27 @@ export async function bulkUpdateBugsAction(
           .filter((bug) => changedIds.includes(bug.id) && change.status === terminalStatus && bug.status !== terminalStatus)
           .map((bug) => bug.id);
         if (terminalIds.length > 0) {
+          const activeClaims = typeof tx.issueClaim?.findMany === "function"
+            ? await tx.issueClaim.findMany({
+                where: { bugId: { in: terminalIds }, status: "active", releasedAt: null },
+                select: { id: true, agentId: true, beneficiaryUserId: true, bugId: true },
+              })
+            : [];
           await tx.issueClaim.updateMany({
             where: { bugId: { in: terminalIds }, status: "active", releasedAt: null },
             data: { status: "released", releasedAt: new Date(), releaseReason: terminalStatus },
           });
+          for (const claim of activeClaims) {
+            const claimTenantId = byId.get(claim.bugId)?.tenantId ?? tenantId;
+            if (!claimTenantId) continue;
+            await publish(tx, {
+              tenantId: claimTenantId,
+              type: "claim.released",
+              actorAgentId: claim.agentId,
+              bugId: claim.bugId,
+              payload: { claimId: claim.id, issueId: claim.bugId, beneficiaryUserId: claim.beneficiaryUserId, reason: terminalStatus },
+            });
+          }
         }
       }
       await tx.bugActivity.createMany({ data: activityCreateData(entries) });
@@ -239,8 +260,11 @@ async function resolveNames(
   tenantId: string | null,
 ): Promise<ToNames> {
   const [type, category, assignee] = await Promise.all([
-    typeof change.typeId === "string"
-      ? prisma.issueType.findUnique({ where: { id: change.typeId }, select: { name: true } })
+    typeof change.typeId === "string" && tenantId
+      ? prisma.issueType.findUnique({
+          where: { id_tenantId: { id: change.typeId, tenantId } },
+          select: { name: true },
+        })
       : null,
     typeof change.categoryId === "string" && tenantId
       ? prisma.category.findFirst({

@@ -8,7 +8,10 @@ const migrate = readFileSync("scripts/migrate.mjs", "utf8");
 describe("Milestone and Bug.milestoneId startup repair", () => {
   it("creates the Milestone table, Bug.milestoneId column, index, and FK constraints without dropping anything", () => {
     expect(columnSql).toContain('CREATE TABLE IF NOT EXISTS "Milestone"');
-    expect(columnSql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "Milestone_title_key"');
+    // The legacy global title index is only for databases that have not run
+    // the #516 tenant migration yet.
+    expect(columnSql).toMatch(/column_name\s*=\s*'tenantId'[\s\S]*Milestone_title_key/);
+    expect(columnSql).not.toMatch(/^CREATE UNIQUE INDEX IF NOT EXISTS "Milestone_title_key"/m);
     expect(columnSql).toContain('ADD COLUMN IF NOT EXISTS "milestoneId"');
     expect(columnSql).toContain('CREATE INDEX IF NOT EXISTS "Bug_milestoneId_idx"');
     expect(columnSql).toContain('"Bug_milestoneId_fkey"');

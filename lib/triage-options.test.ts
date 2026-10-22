@@ -33,6 +33,7 @@ describe("triageFieldsKey (#261)", () => {
     severity: "medium",
     typeId: "fix",
     categoryId: "web",
+    areaId: "frontend",
     assigneeId: "user-1",
   };
 
@@ -45,6 +46,7 @@ describe("triageFieldsKey (#261)", () => {
     ["severity", { severity: "high" }],
     ["type", { typeId: "design" }],
     ["platform", { categoryId: null }],
+    ["area", { areaId: "backend" }],
     ["assignee", { assigneeId: "user-2" }],
   ])("changes when the saved %s changes, so the fields remount", (_field, change) => {
     expect(triageFieldsKey({ ...saved, ...change })).not.toBe(triageFieldsKey(saved));
@@ -53,7 +55,7 @@ describe("triageFieldsKey (#261)", () => {
   it("treats a missing value the same as an empty one", () => {
     const empty = { status: "open", severity: "low" };
     expect(triageFieldsKey(empty)).toBe(
-      triageFieldsKey({ ...empty, typeId: null, categoryId: undefined, assigneeId: null }),
+      triageFieldsKey({ ...empty, typeId: null, categoryId: undefined, areaId: null, assigneeId: null }),
     );
   });
 });

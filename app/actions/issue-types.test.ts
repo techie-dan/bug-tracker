@@ -9,7 +9,12 @@ vi.mock("next/cache", () => ({
 }));
 
 vi.mock("@/lib/auth-helpers", () => ({
+  requireUser: vi.fn().mockResolvedValue({ id: "admin-1", role: "admin" }),
   requireAdmin: vi.fn().mockResolvedValue({ id: "admin-1", role: "admin" }),
+}));
+
+vi.mock("@/lib/tenant-context", () => ({
+  currentTenantIdFor: vi.fn().mockResolvedValue("tenant-ziki"),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -20,6 +25,12 @@ vi.mock("@/lib/prisma", () => {
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+    },
+    tenant: {
+      findUnique: vi.fn().mockResolvedValue({ id: "tenant-ziki", name: "Ziki" }),
+    },
+    membership: {
+      findUnique: vi.fn().mockResolvedValue({ role: "member" }),
     },
     bug: {
       count: vi.fn(),
@@ -41,7 +52,6 @@ import {
 } from "./issue-types";
 
 const findFirstMock = vi.mocked(prisma.issueType.findFirst) as unknown as ReturnType<typeof vi.fn>;
-const findUniqueMock = vi.mocked(prisma.issueType.findUnique) as unknown as ReturnType<typeof vi.fn>;
 const createMock = vi.mocked(prisma.issueType.create) as unknown as ReturnType<typeof vi.fn>;
 const updateMock = vi.mocked(prisma.issueType.update) as unknown as ReturnType<typeof vi.fn>;
 const deleteMock = vi.mocked(prisma.issueType.delete) as unknown as ReturnType<typeof vi.fn>;
@@ -71,6 +81,7 @@ describe("issue-types actions duplicate checks (#139)", () => {
       expect(result.error).toBe('A type named "Fix" already exists.');
       expect(findFirstMock).toHaveBeenCalledWith({
         where: {
+          tenantId: "tenant-ziki",
           name: {
             equals: "fix",
             mode: "insensitive",
@@ -92,6 +103,7 @@ describe("issue-types actions duplicate checks (#139)", () => {
       expect(result.ok).toBe(true);
       expect(createMock).toHaveBeenCalledWith({
         data: {
+          tenantId: "tenant-ziki",
           name: "Feat",
           description: null,
           template: null,
@@ -103,8 +115,10 @@ describe("issue-types actions duplicate checks (#139)", () => {
 
   describe("updateIssueTypeAction", () => {
     it("rejects case-insensitive duplicate when updating to an existing type name", async () => {
-      findUniqueMock.mockResolvedValue({ id: "type-2", name: "Feature" });
-      findFirstMock.mockResolvedValue({ id: "type-1", name: "Design" });
+      findFirstMock.mockImplementation(async ({ where }) => {
+        if (where.id) return { id: "type-2", name: "Feature" };
+        return { id: "type-1", name: "Design" };
+      });
 
       const formData = new FormData();
       formData.set("name", "DESIGN");
@@ -116,8 +130,10 @@ describe("issue-types actions duplicate checks (#139)", () => {
     });
 
     it("records BugActivity on linked issues when issue type name is renamed (#365)", async () => {
-      findUniqueMock.mockResolvedValue({ id: "type-1", name: "Bug" });
-      findFirstMock.mockResolvedValue(null);
+      findFirstMock.mockImplementation(async ({ where }) => {
+        if (where.id) return { id: "type-1", name: "Bug" };
+        return null;
+      });
       updateMock.mockResolvedValue({ id: "type-1", name: "Defect" });
       bugFindManyMock.mockResolvedValue([{ id: "bug-1" }, { id: "bug-2" }]);
       bugActivityCreateManyMock.mockResolvedValue({ count: 2 });
@@ -165,8 +181,10 @@ describe("issue-types actions duplicate checks (#139)", () => {
     });
 
     it("does not record BugActivity when issue type name is unchanged", async () => {
-      findUniqueMock.mockResolvedValue({ id: "type-1", name: "Bug" });
-      findFirstMock.mockResolvedValue(null);
+      findFirstMock.mockImplementation(async ({ where }) => {
+        if (where.id) return { id: "type-1", name: "Bug" };
+        return null;
+      });
       updateMock.mockResolvedValue({ id: "type-1", name: "Bug" });
 
       const formData = new FormData();
@@ -186,7 +204,6 @@ describe("issue-types actions on a type that no longer exists (#227)", () => {
   });
 
   it("returns 'Type not found' when updating a type deleted in another tab", async () => {
-    findUniqueMock.mockResolvedValue(null);
     findFirstMock.mockResolvedValue(null);
     updateMock.mockRejectedValue(recordNotFound);
 
@@ -199,7 +216,7 @@ describe("issue-types actions on a type that no longer exists (#227)", () => {
   });
 
   it("returns 'Type not found' when deleting a type that is already gone", async () => {
-    findUniqueMock.mockResolvedValue(null);
+    findFirstMock.mockResolvedValue(null);
 
     const result = await deleteIssueTypeAction("type-gone");
 
@@ -208,7 +225,7 @@ describe("issue-types actions on a type that no longer exists (#227)", () => {
   });
 
   it("returns 'Type not found' when the type is deleted between the check and the delete", async () => {
-    findUniqueMock.mockResolvedValue({ id: "type-1" });
+    findFirstMock.mockResolvedValue({ id: "type-1" });
     bugCountMock.mockResolvedValue(0);
     deleteMock.mockRejectedValue(recordNotFound);
 
@@ -218,7 +235,7 @@ describe("issue-types actions on a type that no longer exists (#227)", () => {
   });
 
   it("still deletes an unused type that exists", async () => {
-    findUniqueMock.mockResolvedValue({ id: "type-1" });
+    findFirstMock.mockResolvedValue({ id: "type-1" });
     bugCountMock.mockResolvedValue(0);
     deleteMock.mockResolvedValue({ id: "type-1" });
 
@@ -245,6 +262,10 @@ describe("issue type templates (#307)", () => {
   });
 
   it("stores a blank template as none", async () => {
+    findFirstMock.mockImplementation(async ({ where }) => {
+      if (where.id) return { id: "t", name: "Docs" };
+      return null;
+    });
     updateMock.mockResolvedValue({ id: "t" });
     const fd = new FormData();
     fd.set("name", "Docs");
@@ -254,6 +275,10 @@ describe("issue type templates (#307)", () => {
   });
 
   it("leaves the template alone when an update doesn't send one", async () => {
+    findFirstMock.mockImplementation(async ({ where }) => {
+      if (where.id) return { id: "t", name: "Docs" };
+      return null;
+    });
     updateMock.mockResolvedValue({ id: "t" });
     const fd = new FormData();
     fd.set("name", "Docs");

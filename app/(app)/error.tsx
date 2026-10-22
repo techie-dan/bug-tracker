@@ -7,6 +7,7 @@ import {
   primaryActionClass,
   secondaryActionClass,
 } from "@/components/status-page";
+import { databaseErrorReason } from "@/lib/db-error";
 
 /**
  * Error boundary for every signed-in page (#214). Shows a retry instead of
@@ -24,6 +25,8 @@ export default function AppError({
     console.error("[app:error]", error.digest ?? "", error);
   }, [error]);
 
+  const reason = databaseErrorReason(error);
+
   return (
     <StatusPage
       title="This page didn't load"
@@ -39,9 +42,8 @@ export default function AppError({
       }
     >
       <p>
-        Something went wrong on our side while loading this page. Trying again
-        usually works. If it keeps happening, report it with the reference
-        below.
+        {reason ??
+          "Something went wrong on our side while loading this page. Trying again usually works. If it keeps happening, report it with the reference below."}
       </p>
       {error.digest ? (
         <p className="text-xs text-slate-500">

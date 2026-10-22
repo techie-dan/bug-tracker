@@ -25,18 +25,21 @@ describe("loadBulkAssignees", () => {
     findMany.mockReset();
   });
 
-  it("returns admins and super admins", async () => {
+  it("returns admins and super admins who belong to the active tenant", async () => {
     findMany.mockResolvedValue([
       { id: "u1", name: "Ada" },
       { id: "u2", name: "Grace" },
     ] as never);
 
-    await expect(loadBulkAssignees()).resolves.toEqual([
+    await expect(loadBulkAssignees("tenant-1")).resolves.toEqual([
       { id: "u1", name: "Ada" },
       { id: "u2", name: "Grace" },
     ]);
     expect(findMany).toHaveBeenCalledWith({
-      where: { role: { in: ["admin", "super_admin"] } },
+      where: {
+        role: { in: ["admin", "super_admin"] },
+        memberships: { some: { tenantId: "tenant-1" } },
+      },
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     });
@@ -46,7 +49,7 @@ describe("loadBulkAssignees", () => {
     findMany.mockRejectedValue(new Error('column "role" does not exist'));
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(loadBulkAssignees()).resolves.toEqual([]);
+    await expect(loadBulkAssignees("tenant-1")).resolves.toEqual([]);
 
     error.mockRestore();
   });

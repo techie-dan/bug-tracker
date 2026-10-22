@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { Prisma, Status } from "@prisma/client";
+import { SHOW_RESOLVED, SHOW_RESOLVED_PARAM } from "@/lib/issue-state";
+import { DUPLICATES_PARAM, SHOW_DUPLICATES } from "@/lib/duplicates";
 
 /**
  * Milestones (#289): a release or sprint that groups issues and can carry
@@ -93,6 +95,20 @@ export function milestoneWhere(filter: MilestoneFilter): Prisma.BugWhereInput {
   if (filter === "none") return { milestoneId: null };
   if (filter) return { milestoneId: filter.id };
   return {};
+}
+
+/**
+ * The issues list showing every issue in one milestone. A milestone counts
+ * its resolved, closed and duplicate issues, but the list hides those by
+ * default (#1058, #285), so "All N issues" has to ask for them.
+ */
+export function milestoneIssuesHref(milestoneId: string): string {
+  const params = new URLSearchParams({
+    [MILESTONE_PARAM]: milestoneId,
+    [SHOW_RESOLVED_PARAM]: SHOW_RESOLVED,
+    [DUPLICATES_PARAM]: SHOW_DUPLICATES,
+  });
+  return `/issues?${params}`;
 }
 
 export function milestoneParamValue(filter: MilestoneFilter): string | undefined {

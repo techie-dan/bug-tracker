@@ -11,12 +11,75 @@ import { walletAddressSchema } from "@/lib/validations/issue";
 import { isAdmin } from "@/lib/roles";
 import { fromZodError, fieldError, type FieldErrorResult } from "@/lib/form-errors";
 import { appCookieOptions } from "@/lib/cookie-options";
+import { compare, hash } from "bcryptjs";
+import { sendMail, smtpConfigured } from "@/lib/mail";
+import { logger } from "@/lib/logger";
+import { consumeAuthRateLimit, RATE_LIMIT_MESSAGE } from "@/lib/rate-limit";
+import { changePasswordSchema } from "@/lib/validations/issue";
 
 export type SettingsResult = { error?: string; ok?: boolean; emailNotifications?: boolean };
 
 export type DisplayNameResult = Partial<FieldErrorResult> & { ok?: boolean; name?: string };
 
 export type WalletResult = Partial<FieldErrorResult> & { ok?: boolean; walletAddress?: string | null };
+
+export type ChangePasswordResult = Partial<FieldErrorResult> & { ok?: boolean };
+
+/**
+ * Change a credentials password from Settings (#570). Updating sessionVersion
+ * invalidates every issued JWT, including this one; the form then asks the
+ * person to sign in again with their new password.
+ */
+export async function changePasswordAction(
+  _prev: ChangePasswordResult | undefined,
+  formData: FormData,
+): Promise<ChangePasswordResult> {
+  const user = await requireUser();
+  const parsed = changePasswordSchema.safeParse({
+    currentPassword: formData.get("currentPassword"),
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+  if (!parsed.success) return fromZodError(parsed.error);
+
+  // Check before bcrypt so repeated guesses cannot be used to consume CPU.
+  const limit = await consumeAuthRateLimit("changePassword", { email: `user:${user.id}`, ip: null });
+  if (!limit.allowed) return { error: RATE_LIMIT_MESSAGE };
+
+  const account = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { email: true, passwordHash: true },
+  });
+  if (!account?.passwordHash) {
+    return { error: "Password changes are only available for password-based accounts." };
+  }
+
+  if (!(await compare(parsed.data.currentPassword, account.passwordHash))) {
+    return {
+      error: "Your current password is incorrect.",
+      field: "currentPassword",
+      fieldErrors: { currentPassword: "Your current password is incorrect." },
+    };
+  }
+
+  const passwordHash = await hash(parsed.data.password, 10);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash, sessionVersion: { increment: 1 } },
+  });
+
+  // Unlike reset links, this is an informational notice: only deliver it
+  // when a real SMTP transport exists (not development's console mailer).
+  if (account.email && smtpConfigured()) {
+    void sendMail({
+      to: account.email,
+      subject: "Your Ziki Issues password was changed",
+      text: "Your Ziki Issues password was changed. All active sessions have been signed out. If this wasn't you, contact an administrator immediately.",
+    }).catch((error: unknown) => logger.error("[settings] password-change notice failed:", error));
+  }
+
+  return { ok: true };
+}
 
 /** Turn the signed-in user's email notifications on or off (#151). */
 export async function setEmailNotificationsAction(enabled: unknown): Promise<SettingsResult> {

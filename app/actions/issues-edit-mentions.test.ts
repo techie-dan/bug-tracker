@@ -78,6 +78,7 @@ function existingBug(description: string) {
     title: "Login button does nothing",
     description,
     reporterId: "reporter-1",
+    tenantId: "tenant-zedu",
     isDeleted: false,
   };
 }
@@ -171,5 +172,34 @@ describe("editBugContentAction history (#303)", () => {
     findBugMock.mockResolvedValue(existingBug("Clicking Login does nothing at all."));
     await edit("Clicking Login does nothing at all.");
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("editBugContentAction mentions stay inside the tenant (#502)", () => {
+  const daveId = "clxxxxxxxxxxxxxxxxxxxxxxxx4";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Bob is in the issue's tenant; Dave is only in another one.
+    findUsersMock.mockImplementation(async ({ where }: { where: { id: { in: string[] }; memberships?: { some: { tenantId: string } } } }) =>
+      [{ id: bobId, name: "Bob", tenant: "tenant-zedu" }, { id: daveId, name: "Dave Acme", tenant: "tenant-acme" }]
+        .filter((u) => where.id.in.includes(u.id) && u.tenant === where.memberships?.some.tenantId)
+        .map(({ id, name }) => ({ id, name })),
+    );
+  });
+
+  it("doesn't notify someone from another tenant tagged in the description", async () => {
+    findBugMock.mockResolvedValue(existingBug("Clicking Login does nothing at all."));
+    const result = await edit(`Clicking Login does nothing at all. cc @[Dave Acme](${daveId}) @[Bob](${bobId})`);
+    expect(result).toEqual({ ok: true });
+    expect(findUsersMock.mock.calls[0][0].where.memberships).toEqual({ some: { tenantId: "tenant-zedu" } });
+    expect(notifyMock).toHaveBeenCalledTimes(1);
+    expect(notifyMock.mock.calls[0][0]).toMatchObject({ kind: "mentioned", recipientIds: [bobId] });
+  });
+
+  it("sends nothing when the only new mention is outside the tenant", async () => {
+    findBugMock.mockResolvedValue(existingBug("Clicking Login does nothing at all."));
+    await edit(`Clicking Login does nothing at all. cc @[Dave Acme](${daveId})`);
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 });

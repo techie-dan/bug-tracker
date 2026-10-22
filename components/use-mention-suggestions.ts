@@ -15,7 +15,8 @@ import {
 } from "@/lib/mentions";
 import { applyTextChange } from "@/lib/editor-dom";
 
-export type MentionUser = { id: string; name: string };
+/** `agentOwner` marks an agent option (`id` is `agent:<id>`) and names its owner (#603). */
+export type MentionUser = { id: string; name: string; agentOwner?: string };
 
 /**
  * Shared @mention autocomplete state so every editor (bug description,
@@ -58,10 +59,21 @@ export function useMentionSuggestions({
   const sync = useCallback(
     (nextValue: string, caret: number, resetIndex = false) => {
       if (!enabled) return;
-      setMention(getMentionQuery(nextValue, caret));
-      if (resetIndex) setActiveIndex(0);
+      const nextMention = getMentionQuery(nextValue, caret);
+      setMention(nextMention);
+      // Reset the highlight when the mention query changes (e.g. moving between
+      // mention spans) so the index never points past the new suggestions (#1171).
+      if (
+        resetIndex ||
+        !mention ||
+        !nextMention ||
+        nextMention.start !== mention.start ||
+        nextMention.query !== mention.query
+      ) {
+        setActiveIndex(0);
+      }
     },
-    [enabled],
+    [enabled, mention],
   );
 
   const close = useCallback(() => setMention(null), []);
@@ -112,7 +124,7 @@ export function useMentionSuggestions({
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        const user = suggestions[activeIndex];
+        const user = suggestions[Math.min(activeIndex, suggestions.length - 1)];
         if (user) apply(user);
         return true;
       }

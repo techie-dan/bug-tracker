@@ -74,6 +74,8 @@ export type NotificationEvent =
       kind: "agent_question";
       questionId: string;
       excerpt?: string;
+      /** #606: the question is still unanswered and the agent's claim is paused on it. */
+      reminder?: boolean;
     })
   | (AgentBase & {
       /** A redesign is waiting for this person to approve it (#431). */
@@ -86,6 +88,22 @@ export type NotificationEvent =
       kind: "tenant_invite";
       inviteId: string;
       tenantName: string;
+    })
+  | (AgentBase & {
+      /** A person asked to join a discoverable tenant (#772). */
+      kind: "tenant_join_request";
+      requestId: string;
+      tenantId: string;
+      tenantName: string;
+      tenantSlug: string;
+    })
+  | (AgentBase & {
+      /** A tenant owner or admin reviewed a join request (#772). */
+      kind: "tenant_join_request_result";
+      tenantId: string;
+      tenantName: string;
+      tenantSlug: string;
+      status: "approved" | "rejected";
     })
   | (AgentBase & {
       /** The platform offered this person an issue (#449). */
@@ -106,6 +124,8 @@ export const AGENT_NOTIFICATION_KINDS = [
   "agent_question",
   "approval_needed",
   "tenant_invite",
+  "tenant_join_request",
+  "tenant_join_request_result",
   "claim_offered",
   "merge_failed",
 ] as const;
@@ -148,6 +168,10 @@ function agentTarget(event: Extract<NotificationEvent, AgentBase>): { path: stri
       return { path: `/redesigns/${event.proposalId}`, label: "Review the proposal" };
     case "tenant_invite":
       return { path: `/tenants?invite=${encodeURIComponent(event.inviteId)}`, label: "See the invite" };
+    case "tenant_join_request":
+      return { path: `/tenants/${encodeURIComponent(event.tenantSlug)}`, label: "Review the request" };
+    case "tenant_join_request_result":
+      return { path: "/tenants", label: "See your workspaces" };
     case "claim_offered":
       return { path: `/issues/${event.bugId}`, label: "Open the issue" };
     case "merge_failed":
@@ -166,9 +190,12 @@ function planAgentNotification(
   let lines: (string | false | undefined)[];
   switch (event.kind) {
     case "agent_question":
-      subject = `${event.actorName} has a question for you${about}`;
+      subject = event.reminder
+        ? `Reminder: ${event.actorName} is still waiting for your answer${about}`
+        : `${event.actorName} has a question for you${about}`;
       lines = [
         `${event.actorName}, an agent working for you, asked you a question${about}.`,
+        event.reminder && "Its work on the issue is paused until you answer.",
         event.excerpt ? `\n> ${event.excerpt}` : undefined,
       ];
       break;
@@ -182,6 +209,18 @@ function planAgentNotification(
     case "tenant_invite":
       subject = `${event.actorName} invited you to ${event.tenantName}`;
       lines = [`${event.actorName} invited you to join ${event.tenantName} on Ziki.`];
+      break;
+    case "tenant_join_request":
+      subject = `${event.actorName} requested to join ${event.tenantName}`;
+      lines = [`${event.actorName} asked to join ${event.tenantName}. Review the request in tenant settings.`];
+      break;
+    case "tenant_join_request_result":
+      subject = event.status === "approved"
+        ? `Your request to join ${event.tenantName} was approved`
+        : `Your request to join ${event.tenantName} was declined`;
+      lines = [event.status === "approved"
+        ? `You can now open ${event.tenantName} on Ziki.`
+        : `The owners or admins of ${event.tenantName} declined your request. You can submit another request from workspace discovery.`];
       break;
     case "claim_offered":
       subject = `You've been offered ${quote(event.bugTitle)}`;

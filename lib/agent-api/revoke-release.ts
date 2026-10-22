@@ -71,7 +71,7 @@ export async function releaseWorkOfRevokedAgent(
     if (canReoffer && await isConfirmed(claim.bugId, tx)) {
       const bug = await tx.bug.findFirst({
         where: { id: claim.bugId, tenantId, isDeleted: false },
-        select: { id: true, projectId: true, title: true, status: true, assigneeId: true },
+        select: { id: true, projectId: true, title: true, status: true, assigneeId: true, areaId: true },
       });
       if (bug?.status === "open") {
         const next = await offerNext(tx, { tenantId }, bug, [claim.beneficiaryUserId]);

@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const mocks = vi.hoisted(() => ({ requireAgent: vi.fn(), budget: vi.fn(), merge: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  requireAgent: vi.fn(),
+  budget: vi.fn(),
+  merge: vi.fn(),
+  clientForInstallation: vi.fn(),
+  standingAcceptance: vi.fn(),
+}));
 
 vi.mock("@/lib/agents/require-agent", async (original) => ({
   ...(await original<typeof import("@/lib/agents/require-agent")>()),
@@ -15,10 +21,14 @@ vi.mock("@/lib/agents/rate-budget", () => ({
 vi.mock("@/lib/github/merge-pr", async (original) => ({
   ...(await original<typeof import("@/lib/github/merge-pr")>()),
   mergeAcceptedFix: mocks.merge,
+  clientForInstallation: mocks.clientForInstallation,
+  standingAcceptance: mocks.standingAcceptance,
 }));
 
 const db = vi.hoisted(() => ({
   bug: { findFirst: vi.fn(), update: vi.fn() },
+  issueClaim: { findFirst: vi.fn() },
+  bugActivity: { create: vi.fn() },
   agentAuditEvent: { create: vi.fn() },
   agentEvent: { create: vi.fn() },
   webhookSubscription: { findMany: vi.fn() },
@@ -65,11 +75,17 @@ describe("POST /api/v1/issues/[id]/github (#452)", () => {
       mergeCommitSha: "merge-sha",
       pullRequestUrl: PR_URL,
     });
+    mocks.clientForInstallation.mockReturnValue(null);
+    mocks.standingAcceptance.mockResolvedValue(null);
     db.bug.findFirst.mockResolvedValue({
       id: "bug1",
-      project: { repoUrl: "https://github.com/zedu/web" },
+      projectId: "proj-1",
+      pullRequestUrl: null,
+      project: { repoUrl: "https://github.com/zedu/web", githubInstallationId: null },
     });
     db.bug.update.mockResolvedValue({});
+    db.issueClaim.findFirst.mockResolvedValue({ id: "claim-1" });
+    db.bugActivity.create.mockResolvedValue({});
     db.agentAuditEvent.create.mockResolvedValue({});
     db.agentEvent.create.mockResolvedValue({ id: "event-1" });
     db.webhookSubscription.findMany.mockResolvedValue([]);
@@ -81,10 +97,45 @@ describe("POST /api/v1/issues/[id]/github (#452)", () => {
     expect(await response.json()).toEqual({ linked: true, merged: true, mergeCommitSha: "merge-sha" });
     expect(db.bug.update).toHaveBeenCalledWith({
       where: { id: "bug1" },
-      data: { pullRequestUrl: PR_URL },
+      data: { pullRequestUrl: PR_URL, pullRequestHeadSha: null },
+    });
+    expect(db.bugActivity.create).toHaveBeenCalledWith({
+      data: {
+        bugId: "bug1",
+        actorId: agent.ownerId,
+        type: "edited",
+        summary: `linked PR ${PR_URL}`,
+        metadata: {
+          field: "pullRequestUrl",
+          pullRequestUrl: PR_URL,
+        },
+      },
+    });
+    expect(db.agentEvent.create).toHaveBeenCalledWith({
+      data: {
+        tenantId: agent.tenantId,
+        type: "issue.pr_linked",
+        payload: {
+          issueId: "bug1",
+          projectId: "proj-1",
+          pullRequestUrl: PR_URL,
+          agentId: agent.agentId,
+        },
+        actorAgentId: agent.agentId,
+        bugId: "bug1",
+      },
+      select: { id: true },
     });
     expect(mocks.merge).toHaveBeenCalledWith(agent, "bug1");
-    expect(mocks.budget).toHaveBeenCalledWith({ id: "c1", burst: false }, "write");
+    expect(mocks.budget).toHaveBeenCalledWith({ id: "c1", burst: false, burstUntil: null }, "write");
+  });
+
+  it("refuses to link a pull request when this agent has no active claim", async () => {
+    db.issueClaim.findFirst.mockResolvedValue(null);
+    const response = await POST(request({ pullRequestUrl: PR_URL }), params);
+    expect(response.status).toBe(409);
+    expect(db.bug.update).not.toHaveBeenCalled();
+    expect(mocks.merge).not.toHaveBeenCalled();
   });
 
   it("links only, without merging, before the fix is accepted", async () => {
@@ -109,6 +160,83 @@ describe("POST /api/v1/issues/[id]/github (#452)", () => {
     );
     expect(response.status).toBe(422);
     expect(db.bug.update).not.toHaveBeenCalled();
+  });
+
+  it("refuses to swap in a different pull request after the fix was accepted (#489)", async () => {
+    db.bug.findFirst.mockResolvedValue({
+      id: "bug1",
+      pullRequestUrl: PR_URL,
+      project: { repoUrl: "https://github.com/zedu/web", githubInstallationId: null },
+    });
+    mocks.standingAcceptance.mockResolvedValue({ id: "accepted-1", payload: {} });
+
+    const response = await POST(
+      request({ pullRequestUrl: "https://github.com/zedu/web/pull/999" }),
+      params,
+    );
+
+    expect(response.status).toBe(409);
+    expect(db.bug.update).not.toHaveBeenCalled();
+    expect(mocks.merge).not.toHaveBeenCalled();
+  });
+
+  it("allows re-linking the accepted pull request, refreshing its head SHA (#489)", async () => {
+    db.bug.findFirst.mockResolvedValue({
+      id: "bug1",
+      pullRequestUrl: PR_URL,
+      project: { repoUrl: "https://github.com/zedu/web", githubInstallationId: "123" },
+    });
+    mocks.standingAcceptance.mockResolvedValue({ id: "accepted-1", payload: {} });
+    mocks.clientForInstallation.mockReturnValue({
+      getPullRequest: vi.fn(async () => ({ merged: false, mergeable: true, headSha: "fresh-sha" })),
+    });
+    mocks.merge.mockResolvedValue({
+      status: 409,
+      merged: false,
+      reason: "head_moved",
+      message: "The accepted pull request's head commit changed since acceptance.",
+    });
+
+    const response = await POST(request({ pullRequestUrl: PR_URL }), params);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ linked: true, merged: false, reason: "head_moved" });
+    expect(db.bug.update).toHaveBeenCalledWith({
+      where: { id: "bug1" },
+      data: { pullRequestUrl: PR_URL, pullRequestHeadSha: "fresh-sha" },
+    });
+  });
+
+  it("records the head SHA GitHub reports when linking (#489)", async () => {
+    mocks.clientForInstallation.mockReturnValue({
+      getPullRequest: vi.fn(async () => ({ merged: false, mergeable: true, headSha: "abc123" })),
+    });
+    mocks.merge.mockResolvedValue({ status: 409, merged: false, reason: "not_accepted", message: "no" });
+
+    const response = await POST(request({ pullRequestUrl: PR_URL }), params);
+
+    expect(response.status).toBe(200);
+    expect(db.bug.update).toHaveBeenCalledWith({
+      where: { id: "bug1" },
+      data: { pullRequestUrl: PR_URL, pullRequestHeadSha: "abc123" },
+    });
+  });
+
+  it("still links when GitHub cannot be reached for the head SHA (#489)", async () => {
+    mocks.clientForInstallation.mockReturnValue({
+      getPullRequest: vi.fn(async () => {
+        throw new Error("GitHub down");
+      }),
+    });
+    mocks.merge.mockResolvedValue({ status: 409, merged: false, reason: "not_accepted", message: "no" });
+
+    const response = await POST(request({ pullRequestUrl: PR_URL }), params);
+
+    expect(response.status).toBe(200);
+    expect(db.bug.update).toHaveBeenCalledWith({
+      where: { id: "bug1" },
+      data: { pullRequestUrl: PR_URL, pullRequestHeadSha: null },
+    });
   });
 
   it("404s when the issue is not in the agent's tenant", async () => {

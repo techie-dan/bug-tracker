@@ -79,7 +79,7 @@ describe("GET /api/v1/agents/me/points (#618)", () => {
       tenantId: "tenant-zedu",
       userId: "ada",
     });
-    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false }, "read");
+    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false, burstUntil: null }, "read");
     expect(db.agentAuditEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ action: "points.balance", tenantId: "tenant-zedu" }),
     });
@@ -113,10 +113,22 @@ describe("GET /api/v1/agents/me/points (#618)", () => {
   });
 
   it("refuses a malformed or backwards period before touching the ledger", async () => {
-    for (const query of ["?from=yesterday", "?from=", "?from=2026-10-02&to=2026-10-01"]) {
+    for (const query of ["?from=yesterday", "?from=", "?to=1", "?from=2026-10-02&to=2026-10-01"]) {
       expect((await GET(request(query))).status).toBe(400);
     }
     expect(db.pointEntry.aggregate).not.toHaveBeenCalled();
+  });
+
+  it("treats a date-only `to` as end-of-day UTC (#503)", async () => {
+    const response = await GET(request("?to=2026-10-20"));
+    expect(response.status).toBe(200);
+    const bounded = db.pointEntry.aggregate.mock.calls
+      .map((call) => call[0].where)
+      .filter((where) => where.createdAt !== undefined);
+    expect(bounded).toHaveLength(1);
+    expect(bounded[0].createdAt).toEqual({
+      lte: new Date("2026-10-20T23:59:59.999Z"),
+    });
   });
 
   it("does not call the ledger when the read budget is used up", async () => {

@@ -103,4 +103,16 @@ describe("AttachmentPicker (#734)", () => {
       expect(onChange).not.toHaveBeenCalledWith(expect.arrayContaining(["huge.png"]));
     });
   });
+
+  it("rejects files over 5 MB before making an upload request", async () => {
+    global.fetch = vi.fn();
+    const { container } = render(<AttachmentPicker />);
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const oversized = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" });
+
+    await user.upload(fileInput, oversized);
+
+    expect((await screen.findByRole("alert")).textContent).toBe("File is too large (max 5 MB).");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

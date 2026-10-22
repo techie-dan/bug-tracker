@@ -40,7 +40,7 @@ export function BrandLockup({
               : "whitespace-nowrap text-lg font-semibold tracking-tight text-slate-900"
           }
         >
-          Ziki Issues
+          Ziki
         </span>
       ) : null}
     </>
@@ -48,7 +48,7 @@ export function BrandLockup({
 
   if (!href) {
     return (
-      <div className="inline-flex items-center gap-2.5" aria-label="Ziki Issues">
+      <div className="inline-flex items-center gap-2.5" aria-label="Ziki">
         {content}
       </div>
     );
@@ -58,7 +58,7 @@ export function BrandLockup({
     <Link
       href={href}
       className="inline-flex items-center gap-2.5"
-      aria-label="Ziki Issues"
+      aria-label="Ziki"
     >
       {content}
     </Link>

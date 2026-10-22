@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth-helpers";
+import { requireUser } from "@/lib/auth-helpers";
 import { milestoneInputSchema, parseDueDate } from "@/lib/milestones";
+import { milestoneScopeFor } from "@/lib/milestone-stats";
 
 export type MilestoneActionResult = { ok?: true; error?: string; cleared?: number };
 
@@ -32,21 +33,32 @@ function readInput(formData: FormData) {
   return { data: { ...parsed.data, dueDate: due } } as const;
 }
 
-async function titleTaken(title: string, exceptId?: string) {
+async function titleTaken(tenantId: string, title: string, exceptId?: string) {
   return prisma.milestone.findFirst({
-    where: { title: { equals: title, mode: "insensitive" }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    where: {
+      tenantId,
+      title: { equals: title, mode: "insensitive" },
+      ...(exceptId ? { NOT: { id: exceptId } } : {}),
+    },
     select: { title: true },
   });
 }
 
 export async function createMilestoneAction(formData: FormData): Promise<MilestoneActionResult> {
-  await requireAdmin();
+  const scope = await milestoneScopeFor(await requireUser());
+  if (!scope.ok) return { error: scope.error };
+
   const input = readInput(formData);
   if ("error" in input) return { error: input.error };
-  const taken = await titleTaken(input.data.title);
+  const taken = await titleTaken(scope.tenantId, input.data.title);
   if (taken) return { error: `A milestone named "${taken.title}" already exists.` };
   try {
-    await prisma.milestone.create({ data: input.data });
+    await prisma.milestone.create({
+      data: {
+        ...input.data,
+        tenantId: scope.tenantId,
+      },
+    });
   } catch (err) {
     if (isCode(err, "P2002")) return { error: `A milestone named "${input.data.title}" already exists.` };
     throw err;
@@ -56,10 +68,17 @@ export async function createMilestoneAction(formData: FormData): Promise<Milesto
 }
 
 export async function updateMilestoneAction(id: string, formData: FormData): Promise<MilestoneActionResult> {
-  await requireAdmin();
+  const scope = await milestoneScopeFor(await requireUser());
+  if (!scope.ok) return { error: scope.error };
+
+  const existing = await prisma.milestone.findFirst({
+    where: { id, tenantId: scope.tenantId },
+  });
+  if (!existing) return { error: NOT_FOUND };
+
   const input = readInput(formData);
   if ("error" in input) return { error: input.error };
-  const taken = await titleTaken(input.data.title, id);
+  const taken = await titleTaken(scope.tenantId, input.data.title, id);
   if (taken) return { error: `Another milestone is named "${taken.title}".` };
   try {
     await prisma.milestone.update({ where: { id }, data: input.data });
@@ -74,7 +93,14 @@ export async function updateMilestoneAction(id: string, formData: FormData): Pro
 
 /** Closing leaves every issue where it is; it only stops new ones joining. */
 export async function setMilestoneClosedAction(id: string, closed: boolean): Promise<MilestoneActionResult> {
-  await requireAdmin();
+  const scope = await milestoneScopeFor(await requireUser());
+  if (!scope.ok) return { error: scope.error };
+
+  const existing = await prisma.milestone.findFirst({
+    where: { id, tenantId: scope.tenantId },
+  });
+  if (!existing) return { error: NOT_FOUND };
+
   try {
     await prisma.milestone.update({
       where: { id },
@@ -90,19 +116,25 @@ export async function setMilestoneClosedAction(id: string, closed: boolean): Pro
 
 /** Record removals atomically with the database's non-destructive SET NULL. */
 export async function deleteMilestoneAction(id: string): Promise<MilestoneActionResult> {
-  const admin = await requireAdmin();
+  const user = await requireUser();
+  const scope = await milestoneScopeFor(user);
+  if (!scope.ok) return { error: scope.error };
+
   let cleared: number;
   try {
     cleared = await prisma.$transaction(async (tx) => {
-      const milestone = await tx.milestone.findUniqueOrThrow({
-        where: { id },
+      const milestone = await tx.milestone.findFirst({
+        where: { id, tenantId: scope.tenantId },
         select: { title: true, bugs: { select: { id: true } } },
       });
+      if (!milestone) {
+        throw Object.assign(new Error(NOT_FOUND), { code: "P2025" });
+      }
       if (milestone.bugs.length) {
         await tx.bugActivity.createMany({
           data: milestone.bugs.map((bug) => ({
             bugId: bug.id,
-            actorId: admin.id,
+            actorId: user.id,
             type: "milestone_changed",
             summary: `removed this from milestone "${milestone.title}"`,
             metadata: { field: "milestone", from: milestone.title, to: null },

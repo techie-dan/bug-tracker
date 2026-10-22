@@ -1,0 +1,12 @@
+@echo off
+echo ## Summary
+echo - Created in-app Developer/API docs page at /docs with authentication, quick links, and core API examples.
+echo - Added link to /llms.txt in app metadata and head tag for crawler discovery.
+echo - Added API Docs links in header navigation, account menu (desktop/mobile), Settings (Agents section), and Settings -> Agents page.
+echo - Added header nav item API Docs for discoverability.
+echo.
+echo Fixes #625
+echo.
+echo ## Testing
+echo - Lint passes (existing warnings only). UI/metadata additions; no breaking logic changes.
+

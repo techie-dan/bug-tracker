@@ -83,7 +83,7 @@ export default async function PointsDisputesPage() {
   const tenantId = await currentTenantIdFor(user.id);
   if (!tenantId) {
     return (
-      <div className="mx-auto max-w-3xl space-y-6">
+      <div className="space-y-6">
         <h1 className="text-2xl font-semibold text-slate-900">Points disputes</h1>
         <p className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
           You&apos;re not a member of a workspace yet, so there are no points to dispute.
@@ -100,7 +100,7 @@ export default async function PointsDisputesPage() {
   ]);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
+    <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-slate-900">Points disputes</h1>

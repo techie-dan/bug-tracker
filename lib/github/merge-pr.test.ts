@@ -1,5 +1,5 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
   bug: { findFirst: vi.fn(), update: vi.fn() },
@@ -7,6 +7,7 @@ const db = vi.hoisted(() => ({
   agentEvent: { create: vi.fn() },
   webhookSubscription: { findMany: vi.fn() },
   webhookDelivery: { createMany: vi.fn() },
+  projectWorkflow: { findUnique: vi.fn() },
   $transaction: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: db }));
@@ -16,12 +17,14 @@ vi.mock("@/lib/agent-notifications", () => ({ notifyMergeFailed: notify.notifyMe
 
 import {
   createAppJwt,
+  createInstallationClient,
   mergeAcceptedFix,
   parseGitHubRepoUrl,
   parsePullRequestUrl,
   sameRepo,
   type GitHubClient,
 } from "./merge-pr";
+import { resetWorkflowCache } from "@/lib/workflow";
 
 const agent = {
   agentId: "m1",
@@ -38,6 +41,7 @@ function bugRow(overrides: Record<string, unknown> = {}) {
     id: "bug1",
     title: "Fix the thing",
     tenantId: "t1",
+    projectId: "project-1",
     pullRequestUrl: "https://github.com/zedu/web/pull/7",
     assigneeId: "ada",
     project: { repoUrl: "https://github.com/zedu/web", githubInstallationId: "12345" },
@@ -55,6 +59,22 @@ function fakeClient(overrides: Partial<GitHubClient> = {}): GitHubClient {
   };
 }
 
+function jsonResponse(data: unknown, ok = true, status = ok ? 200 : 500): Response {
+  return { ok, status, json: async () => data, headers: new Headers() } as unknown as Response;
+}
+
+/** Route GitHub's endpoints to canned responses; anything else 500s. */
+function stubFetch(handler: (url: string, init?: RequestInit) => Response): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    handler(String(input), init),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+const tokenRoute = (url: string) =>
+  url.endsWith("/access_tokens") ? jsonResponse({ token: "ghs_test" }) : null;
+
 beforeEach(() => {
   vi.clearAllMocks();
   db.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(db));
@@ -63,6 +83,8 @@ beforeEach(() => {
   db.agentAuditEvent.create.mockResolvedValue({});
   db.agentEvent.create.mockResolvedValue({ id: "event-1" });
   db.webhookSubscription.findMany.mockResolvedValue([]);
+  db.projectWorkflow.findUnique.mockResolvedValue(null);
+  resetWorkflowCache();
 });
 
 describe("parseGitHubRepoUrl (#452)", () => {
@@ -129,6 +151,75 @@ describe("mergeAcceptedFix gates (#452)", () => {
     expect(notify.notifyMergeFailed).not.toHaveBeenCalled();
   });
 
+  it("refuses to merge an acceptance a tenant admin has undone (#490)", async () => {
+    // A fake table holding only an undone acceptance row: the lookup must
+    // filter on `undoneAt: null` or it comes back and the merge goes ahead.
+    const rows = [{ id: "accepted-1", undoneAt: new Date("2026-10-19T10:00:00Z") }];
+    db.agentAuditEvent.findFirst.mockImplementation(async (args: { where?: { undoneAt?: null } }) =>
+      rows.find((row) => (args?.where?.undoneAt === null ? row.undoneAt === null : true)) ?? null,
+    );
+    const client = fakeClient();
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "not_accepted" });
+    expect(client.getPullRequest).not.toHaveBeenCalled();
+    expect(client.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("still merges while the acceptance stands, never undone (#490)", async () => {
+    const rows = [{ id: "accepted-1", undoneAt: null }];
+    db.agentAuditEvent.findFirst.mockImplementation(async (args: { where?: { undoneAt?: null } }) =>
+      rows.find((row) => (args?.where?.undoneAt === null ? row.undoneAt === null : true)) ?? null,
+    );
+    const client = fakeClient();
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 200, merged: true });
+  });
+
+  it("refuses a different pull request than the one that was accepted (#489)", async () => {
+    db.agentAuditEvent.findFirst.mockResolvedValue({
+      id: "accepted-1",
+      payload: { pullRequestUrl: "https://github.com/zedu/web/pull/3", headSha: "accepted-sha" },
+    });
+    const client = fakeClient();
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "pull_request_changed" });
+    expect(client.getPullRequest).not.toHaveBeenCalled();
+    expect(client.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("refuses when commits landed on the accepted pull request after acceptance (#489)", async () => {
+    db.agentAuditEvent.findFirst.mockResolvedValue({
+      id: "accepted-1",
+      payload: { pullRequestUrl: "https://github.com/zedu/web/pull/7", headSha: "accepted-sha" },
+    });
+    const client = fakeClient({
+      getPullRequest: vi.fn(async () => ({ merged: false, mergeable: true, headSha: "new-sha" })),
+    });
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "head_moved" });
+    expect(client.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("merges when the linked pull request and head commit are the accepted ones (#489)", async () => {
+    db.agentAuditEvent.findFirst.mockResolvedValue({
+      id: "accepted-1",
+      payload: { pullRequestUrl: "https://github.com/zedu/web/pull/7", headSha: "head-sha" },
+    });
+    const client = fakeClient();
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 200, merged: true });
+  });
+
   it("rejects a pull request outside the project's repository", async () => {
     db.bug.findFirst.mockResolvedValue(
       bugRow({ pullRequestUrl: "https://github.com/someone/fork/pull/7" }),
@@ -156,6 +247,17 @@ describe("mergeAcceptedFix gates (#452)", () => {
     );
   });
 
+  it("skips GitHub when the project turned automatic merging off (#595)", async () => {
+    db.projectWorkflow.findUnique.mockResolvedValue({ autoMerge: false });
+    const client = fakeClient();
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "auto_merge_disabled" });
+    expect(client.getPullRequest).not.toHaveBeenCalled();
+    expect(client.mergePullRequest).not.toHaveBeenCalled();
+  });
+
   it("does not merge without permission to merge the repo", async () => {
     const client = fakeClient({ mergePullRequest: vi.fn(async () => ({ merged: false, forbidden: true })) });
 
@@ -165,6 +267,24 @@ describe("mergeAcceptedFix gates (#452)", () => {
     expect(db.agentEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ type: "github.merge_failed" }) }),
     );
+  });
+
+  it("reports a moved head as its own failure and merges nothing (#492)", async () => {
+    const client = fakeClient({ mergePullRequest: vi.fn(async () => ({ merged: false, conflict: true })) });
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 409, reason: "head_moved" });
+    expect(result.merged).toBe(false);
+  });
+
+  it("reports a repository that allows no merge method (#492)", async () => {
+    const client = fakeClient({ mergePullRequest: vi.fn(async () => ({ merged: false, noAllowedMethod: true })) });
+
+    const result = await mergeAcceptedFix(agent, "bug1", { client });
+
+    expect(result).toMatchObject({ status: 422, reason: "merge_failed" });
+    expect(result).toHaveProperty("message", expect.stringMatching(/merge method/i));
   });
 
   it("refuses to merge when no installation is configured", async () => {
@@ -189,6 +309,7 @@ describe("mergeAcceptedFix gates (#452)", () => {
       pullRequestUrl: "https://github.com/zedu/web/pull/7",
     });
     expect(client.getPullRequest).toHaveBeenCalledWith({ owner: "zedu", repo: "web", number: 7 });
+    expect(client.mergePullRequest).toHaveBeenCalledWith({ owner: "zedu", repo: "web", number: 7 }, "head-sha");
     expect(db.agentAuditEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -210,5 +331,278 @@ describe("mergeAcceptedFix gates (#452)", () => {
       ...db.agentEvent.create.mock.calls,
     ];
     expect(JSON.stringify(writes)).not.toMatch(/token|ghs_|bearer/i);
+  });
+  it("does not merge and returns waiting_for_human when approval is pending (#598)", async () => {
+    (db as Record<string, unknown>).approvalRule = {
+      findMany: vi.fn(async () => [
+        { id: "rule-1", stage: "before_merge", issueTypeId: null, severity: null, fileGlob: null },
+      ]),
+    };
+    (db as Record<string, unknown>).issueApproval = {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: "appr-wait", status: "pending" })),
+    };
+    (db as Record<string, unknown>).membership = {
+      findMany: vi.fn(async () => []),
+    };
+
+    const client = fakeClient();
+    const result = await mergeAcceptedFix(agent, "bug1", { client, db: db as never });
+
+    expect(result).toMatchObject({
+      status: 409,
+      merged: false,
+      reason: "waiting_for_human",
+      approvalId: "appr-wait",
+    });
+    expect(client.mergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("checksGreen against the GitHub API (#491)", () => {
+  const ref = { owner: "zedu", repo: "web", number: 7 };
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: "test",
+    GITHUB_APP_ID: "123456",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function jsonResponse(data: unknown, ok = true): Response {
+    return {
+      ok,
+      status: ok ? 200 : 500,
+      json: async () => data,
+      headers: new Headers(),
+    } as unknown as Response;
+  }
+
+  /** Route GitHub's endpoints to canned responses; anything else throws. */
+  function stubFetch(handler: (url: string, init?: RequestInit) => Response): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      handler(String(input), init),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  const tokenRoute = (url: string) =>
+    url.endsWith("/access_tokens") ? jsonResponse({ token: "ghs_test" }) : null;
+
+  function checkRun(conclusion = "success") {
+    return { status: "completed", conclusion };
+  }
+
+  it("treats a pending combined status with running checks as not green", async () => {
+    stubFetch((url) =>
+      tokenRoute(url) ??
+      (url.includes("/check-runs")
+        ? jsonResponse({ check_runs: [], total_count: 0 })
+        : url.endsWith("/status")
+          ? jsonResponse({ state: "pending", statuses: [{ context: "ci/build" }] })
+          : jsonResponse({}, false)),
+    );
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(false);
+  });
+
+  it("holds when the repository has no check runs and no statuses at all", async () => {
+    stubFetch((url) =>
+      tokenRoute(url) ??
+      (url.includes("/check-runs")
+        ? jsonResponse({ check_runs: [], total_count: 0 })
+        : url.endsWith("/status")
+          ? jsonResponse({ state: "pending", statuses: [] })
+          : jsonResponse({}, false)),
+    );
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(true);
+  });
+
+  it("passes on a success combined status", async () => {
+    stubFetch((url) =>
+      tokenRoute(url) ??
+      (url.includes("/check-runs")
+        ? jsonResponse({ check_runs: [], total_count: 0 })
+        : url.endsWith("/status")
+          ? jsonResponse({ state: "success", statuses: [{ context: "ci/build" }] })
+          : jsonResponse({}, false)),
+    );
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(true);
+  });
+
+  it("fails on a failure combined status", async () => {
+    stubFetch((url) =>
+      tokenRoute(url) ??
+      (url.includes("/check-runs")
+        ? jsonResponse({ check_runs: [], total_count: 0 })
+        : url.endsWith("/status")
+          ? jsonResponse({ state: "failure", statuses: [{ context: "ci/build" }] })
+          : jsonResponse({}, false)),
+    );
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(false);
+  });
+
+  it("reads past the first 30 check runs: a failure on page two blocks the merge", async () => {
+    const fetchMock = stubFetch((url) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url.includes("/check-runs")) {
+        const page = Number(new URL(url).searchParams.get("page"));
+        const runs = page === 1 ? Array.from({ length: 100 }, () => checkRun()) : [checkRun("failure")];
+        return jsonResponse({ check_runs: runs, total_count: 101 });
+      }
+      return jsonResponse({}, false);
+    });
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(false);
+
+    const runUrls = fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => url.includes("/check-runs"));
+    expect(runUrls[0]).toContain("per_page=100");
+    expect(runUrls).toHaveLength(2);
+    expect(runUrls[1]).toContain("page=2");
+  });
+
+  it("is green when every run across all pages has completed successfully", async () => {
+    stubFetch((url) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url.includes("/check-runs")) {
+        const page = Number(new URL(url).searchParams.get("page"));
+        const runs = page === 1 ? Array.from({ length: 100 }, () => checkRun()) : [checkRun()];
+        return jsonResponse({ check_runs: runs, total_count: 101 });
+      }
+      return jsonResponse({}, false);
+    });
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(true);
+  });
+
+  it("is not green while any run across pages is still in progress", async () => {
+    stubFetch((url) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url.includes("/check-runs")) {
+        const page = Number(new URL(url).searchParams.get("page"));
+        const runs = page === 1 ? Array.from({ length: 100 }, () => checkRun()) : [{ status: "in_progress", conclusion: null }];
+        return jsonResponse({ check_runs: runs, total_count: 101 });
+      }
+      return jsonResponse({}, false);
+    });
+
+    await expect(createInstallationClient("123", env).checksGreen(ref, "sha1")).resolves.toBe(false);
+  });
+});
+
+describe("mergePullRequest pins the head SHA and picks an allowed method (#492)", () => {
+  const ref = { owner: "zedu", repo: "web", number: 7 };
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: "test",
+    GITHUB_APP_ID: "123456",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const repoUrl = "https://api.github.com/repos/zedu/web";
+  const mergeUrl = "https://api.github.com/repos/zedu/web/pulls/7/merge";
+
+  it("pins the verified head SHA and uses squash when the repo allows it", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true });
+      if (url === mergeUrl) return jsonResponse({ merged: true, sha: "merge-sha" });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: true, sha: "merge-sha" });
+    const mergeCall = fetchMock.mock.calls.find((call) => String(call[0]) === mergeUrl);
+    expect(mergeCall).toBeDefined();
+    expect(JSON.parse(String(mergeCall![1]?.body))).toEqual({ merge_method: "squash", sha: "verified-sha" });
+  });
+
+  it("falls back to a merge commit when squash is disabled", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: false, allow_merge_commit: true, allow_rebase_merge: false });
+      if (url === mergeUrl) return jsonResponse({ merged: true, sha: "merge-sha" });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result.merged).toBe(true);
+    const mergeCall = fetchMock.mock.calls.find((call) => String(call[0]) === mergeUrl);
+    expect(JSON.parse(String(mergeCall![1]?.body))).toEqual({ merge_method: "merge", sha: "verified-sha" });
+  });
+
+  it("refuses to guess when the repository allows no merge method at all", async () => {
+    const fetchMock = stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: false, allow_merge_commit: false, allow_rebase_merge: false });
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, noAllowedMethod: true });
+    expect(fetchMock.mock.calls.some((call) => String(call[0]) === mergeUrl)).toBe(false);
+  });
+
+  it("maps GitHub's 409 to a conflict so the caller can say the head moved", async () => {
+    stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true });
+      if (url === mergeUrl) return jsonResponse({}, false, 409);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, conflict: true });
+  });
+
+  it("maps GitHub's 405 to an actionable no-allowed-method failure", async () => {
+    // The repo settings read fails, so the client falls back to squash and
+    // GitHub answers 405 Method Not Allowed.
+    stubFetch((url) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === mergeUrl) return jsonResponse({}, false, 405);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, noAllowedMethod: true });
+  });
+
+  it("still maps 403 to forbidden", async () => {
+    stubFetch((url, init) => {
+      const token = tokenRoute(url);
+      if (token) return token;
+      if (url === repoUrl && !init?.method) return jsonResponse({ allow_squash_merge: true });
+      if (url === mergeUrl) return jsonResponse({}, false, 403);
+      return jsonResponse({}, false);
+    });
+
+    const result = await createInstallationClient("123", env).mergePullRequest(ref, "verified-sha");
+
+    expect(result).toEqual({ merged: false, forbidden: true });
   });
 });

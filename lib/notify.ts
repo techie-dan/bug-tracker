@@ -178,8 +178,12 @@ export async function deliverNotifications(event: NotificationEvent): Promise<vo
   const planned = planNotifications(await withWatchers(event), getSiteUrl());
   if (planned.length === 0) return;
 
+  // The invitee cannot switch into this workspace until they accept, so the
+  // row must stay personal or their current workspace hides it.
+  const storedTenantId = event.kind === "tenant_invite" ? null : tenantId;
+
   try {
-    await recordInApp(event, planned, tenantId);
+    await recordInApp(event, planned, storedTenantId);
   } catch (error) {
     // The feed failing must not stop the emails.
     logger.error("[notify] failed to record in-app notifications", error);

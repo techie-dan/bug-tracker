@@ -41,9 +41,22 @@ export type PointBalanceQuery = {
 /** A bound the caller supplied, as a Date, or null. Rejects anything unparseable. */
 function bound(value: Date | string | null | undefined, field: string): Date | null {
   if (value === null || value === undefined || value === "") return null;
-  const date = value instanceof Date ? value : new Date(value);
+  let date: Date;
+  let dateOnly = false;
+  if (typeof value === "string") {
+    dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    date = new Date(value);
+  } else {
+    date = value;
+  }
   if (Number.isNaN(date.getTime())) {
     throw new Error(`${field} must be a valid date.`);
+  }
+  // A date-only inclusive upper bound covers the whole UTC day, not just
+  // midnight. Normalize `to` to 23:59:59.999 UTC so entries late on that day
+  // are included. `from` stays at midnight (start of day).
+  if (dateOnly && field === "to") {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999));
   }
   return date;
 }

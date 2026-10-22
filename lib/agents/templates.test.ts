@@ -4,6 +4,7 @@ import {
   chatGptPromptTemplate,
   nodeScriptTemplate,
   pythonScriptTemplate,
+  mcpConfigTemplate,
   getAgentTemplates,
 } from "./templates";
 
@@ -70,13 +71,29 @@ describe("Agent Onboarding Templates (#610)", () => {
     });
   });
 
+  describe("mcpConfigTemplate (#612)", () => {
+    it("is valid JSON that points Claude Desktop at the server with the site and project", () => {
+      const config = JSON.parse(mcpConfigTemplate({ origin: "https://ziki.dev/", projectId }));
+      expect(config.mcpServers.ziki.command).toBe("node");
+      expect(config.mcpServers.ziki.args[0]).toMatch(/packages\/mcp-server\/dist\/index\.js$/);
+      expect(config.mcpServers.ziki.env).toEqual({ ZIKI_URL: "https://ziki.dev", ZIKI_PROJECT_ID: projectId });
+    });
+
+    it("leaves the project out when there is none and never embeds a key", () => {
+      const text = mcpConfigTemplate({ origin });
+      expect(JSON.parse(text).mcpServers.ziki.env).toEqual({ ZIKI_URL: origin });
+      expect(text).not.toMatch(/ziki_[A-Za-z0-9_-]{10,}|API_KEY/);
+    });
+  });
+
   describe("getAgentTemplates", () => {
-    it("returns all four templates in a single call", () => {
+    it("returns all five templates in a single call", () => {
       const templates = getAgentTemplates({ origin, projectId, projectName });
       expect(templates.claude).toBeTruthy();
       expect(templates.chatgpt).toBeTruthy();
       expect(templates.node).toBeTruthy();
       expect(templates.python).toBeTruthy();
+      expect(templates.mcp).toBeTruthy();
     });
   });
 });

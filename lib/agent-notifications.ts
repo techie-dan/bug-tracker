@@ -23,6 +23,8 @@ export type AgentQuestionInput = Issue & {
   /** The owner being asked; the only person who may answer (#446). */
   ownerUserId: string;
   agent: Agent;
+  /** #606: a reminder for a question still unanswered after 30 minutes. */
+  reminder?: boolean;
 };
 
 export type ApprovalInput = Issue & {
@@ -78,6 +80,7 @@ export function agentQuestionEvent(question: AgentQuestionInput): NotificationEv
     excerpt: excerpt(question.body) || undefined,
     bugId: question.bugId ?? null,
     bugTitle: question.bugTitle ?? null,
+    ...(question.reminder ? { reminder: true } : {}),
   };
 }
 

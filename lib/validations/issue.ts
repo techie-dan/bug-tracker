@@ -48,7 +48,7 @@ export const proofLinksInputSchema = z
     if (links.length > MAX_PROOF_LINKS || rawLinks.length > MAX_PROOF_LINKS) {
       ctx.addIssue({
         code: "custom",
-        message: `You entered ${count} links. At most ${MAX_PROOF_LINKS} proof links are allowed.`,
+        message: `You entered ${count} links. At most ${MAX_PROOF_LINKS} GitHub PR links are allowed.`,
       });
       return z.NEVER;
     }
@@ -77,6 +77,7 @@ export const createBugSchema = z
     typeId: z.string().optional().nullable().or(z.literal("")),
     assigneeId: userIdSchema.optional().or(z.literal("")),
     categoryId: z.string().optional().or(z.literal("")),
+    areaId: z.string().optional().or(z.literal("")),
     proofLinks: proofLinksInputSchema,
   })
   .strict();
@@ -87,6 +88,7 @@ export const updateBugSchema = z.object({
   assigneeId: userIdSchema.nullable().optional().or(z.literal("")),
   severity: severitySchema.optional(),
   categoryId: z.string().nullable().optional().or(z.literal("")),
+  areaId: z.string().nullable().optional().or(z.literal("")),
 });
 
 export const editBugContentSchema = z
@@ -127,6 +129,18 @@ export const categorySchema = z.object({
 /** Alias for categorySchema matching the user-facing Platform domain terminology (#355). */
 export const platformSchema = categorySchema;
 
+export const commentTypeValues = [
+  "comment",
+  "bid",
+  "review",
+  "delivery",
+  "request_to_merge",
+] as const;
+
+export type CommentType = (typeof commentTypeValues)[number];
+
+export const commentTypeSchema = z.enum(commentTypeValues);
+
 export const commentSchema = z.object({
   body: z
     .string()
@@ -144,6 +158,8 @@ export const commentSchema = z.object({
     .optional()
     .or(z.literal(""))
     .transform((value) => (value && value.length > 0 ? value : undefined)),
+  type: commentTypeSchema.optional().default("comment"),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const loginSchema = z.object({
@@ -193,6 +209,18 @@ export const resetPasswordSchema = z
     token: z.string().trim().min(1, "Reset link is invalid or expired"),
     password: passwordField,
     confirmPassword: z.string().min(1, "Confirm your password"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
+
+/** Credentials required before a signed-in person can change their password. */
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Enter your current password"),
+    password: passwordField,
+    confirmPassword: z.string().min(1, "Confirm your new password"),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",

@@ -14,7 +14,7 @@ import { UserSearch } from "@/components/user-search";
 import { PaginationControls } from "@/components/pagination-controls";
 import { calculatePagination } from "@/lib/pagination";
 
-/* Distinct browser-tab title; the root layout appends "· Ziki Issues". */
+/* Distinct browser-tab title; the root layout appends "· Ziki". */
 export const metadata = { title: "Admins" };
 
 const roleBadgeClass = {

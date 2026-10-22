@@ -39,6 +39,10 @@ describe("SHARE_IMAGE", () => {
     expect(SHARE_IMAGE.height).toBeGreaterThanOrEqual(157);
   });
 
+  it("uses the 1.91:1 card shape, so unfurlers show it uncropped", () => {
+    expect(SHARE_IMAGE.width / SHARE_IMAGE.height).toBeCloseTo(1.9, 1);
+  });
+
   it("has alt text, since the card is often read aloud", () => {
     expect(SHARE_IMAGE.alt.trim().length).toBeGreaterThan(0);
   });

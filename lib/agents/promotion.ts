@@ -16,8 +16,9 @@ import { IssueApiError } from "@/lib/agent-api/issues";
  * that still stand — or granted by a tenant admin. `merger` is never automatic:
  * only a tenant admin may grant it, and the admin and the reason are recorded.
  *
- * Silence demotes: three claims released for going quiet (#438) inside a week
- * move a `contributor` back to `observer`. A `merger` is never demoted here.
+ * Silence demotes: three claims released for going quiet (#438) or for missing
+ * the delivery deadline (#593) inside a week move a `contributor` back to
+ * `observer`. A `merger` is never demoted here.
  *
  * An agent can't change its own level: none of these functions reads a level
  * from an agent request, and the only caller-supplied level is an admin's.
@@ -38,6 +39,7 @@ type Db = PrismaClient | Prisma.TransactionClient;
 
 /** The issue context the independence rule needs, per validation. */
 const validationSelect = {
+  id: true,
   agent: { select: { id: true, ownerUserId: true } },
   bug: {
     select: {
@@ -57,15 +59,41 @@ type LoadedValidation = Prisma.IssueValidationGetPayload<{ select: typeof valida
  * an earlier reviewer no longer independent, exactly as #433's confirmation
  * count does.
  *
- * When #450 (undo) lands, an undone validation should stop standing too; today
- * nothing marks them, so this counts every validation the rule still allows.
+ * Undone validations are excluded (#623): if an admin reversed an
+ * `issue.validated` action, it no longer counts toward earned promotion.
  */
+type DbWithAudit = Db & {
+  agentAuditEvent?: {
+    findMany?: (args: {
+      where: { agentId: string; action: string; undoneAt: { not: null } };
+      select: { payload: true };
+    }) => Promise<Array<{ payload: Prisma.JsonValue }>>;
+  };
+};
+
 export async function standingValidations(agentId: string, db: Db = prisma): Promise<number> {
-  const rows = (await db.issueValidation.findMany({
-    where: { agentId },
-    select: validationSelect,
-  })) as LoadedValidation[];
+  const dbWithAudit = db as DbWithAudit;
+  const [rows, undone] = await Promise.all([
+    db.issueValidation.findMany({
+      where: { agentId },
+      select: validationSelect,
+    }) as Promise<LoadedValidation[]>,
+    typeof dbWithAudit.agentAuditEvent?.findMany === "function"
+      ? dbWithAudit.agentAuditEvent.findMany({
+          where: { agentId, action: "issue.validated", undoneAt: { not: null } },
+          select: { payload: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const undoneIds = new Set(
+    (undone as Array<{ payload: { validationId?: string } | null }>)
+      .map((e) => e?.payload?.validationId)
+      .filter(Boolean),
+  );
+
   return rows.filter((row) => {
+    if (undoneIds.has(row.id)) return false;
     // The agent that filed an issue can't validate it; the rule rejects it
     // again here in case the record predates that check.
     if (row.bug.createdByAgentId === row.agent.id) return false;
@@ -78,7 +106,10 @@ export async function standingValidations(agentId: string, db: Db = prisma): Pro
 // Silence releases (#438)
 // ---------------------------------------------------------------------------
 
-/** Claims this agent lost to silence inside the window, counted as of `now`. */
+/**
+ * Claims this agent lost to silence or to a missed delivery deadline inside
+ * the window (#438, #593), counted as of `now`.
+ */
 export async function silenceReleases(
   agentId: string,
   db: Db = prisma,
@@ -86,7 +117,7 @@ export async function silenceReleases(
 ): Promise<number> {
   const since = new Date(now.getTime() - SILENCE_DEMOTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   return db.issueClaim.count({
-    where: { agentId, releaseReason: "silence", releasedAt: { gte: since } },
+    where: { agentId, releaseReason: { in: ["silence", "deadline"] }, releasedAt: { gte: since } },
   });
 }
 
@@ -218,6 +249,32 @@ export async function grantLevelByAdmin(input: AdminGrantInput, db: Db = prisma)
 // ---------------------------------------------------------------------------
 
 /**
+ * Run earned-promotion and silence-demotion sweeps over every active agent
+ * across all tenants (or a specific tenant if provided).
+ * Idempotent: agents already at or above reviewer or already demoted to observer are unchanged.
+ * Called by the scheduled internal cron runner (#647).
+ */
+export async function sweepLevelPromotions(tenantId?: string): Promise<{ promoted: number; demoted: number }> {
+  const agents = await prisma.agent.findMany({
+    where: {
+      revokedAt: null,
+      ...(tenantId ? { tenantId } : {}),
+    },
+    select: { id: true },
+  });
+
+  let promoted = 0;
+  let demoted = 0;
+  for (const { id } of agents) {
+    const promotion = await promoteEarnedReviewer(id);
+    if (promotion.ok && promotion.changed) promoted++;
+    const demotion = await demoteFromSilence(id);
+    if (demotion.ok && demotion.changed) demoted++;
+  }
+  return { promoted, demoted };
+}
+
+/**
  * Run the earned-promotion and silence-demotion rules over every live agent in
  * the project's tenant. Super-admin only; invoke from a daily job or an admin
  * action, the same shape as `releaseStaleClaims` (#438).
@@ -232,18 +289,5 @@ export async function runLevelPromotions(projectId: string): Promise<{ promoted:
   });
   if (!project) throw new IssueApiError(404, "Project not found.");
 
-  const agents = await prisma.agent.findMany({
-    where: { tenantId: project.tenantId, revokedAt: null },
-    select: { id: true },
-  });
-
-  let promoted = 0;
-  let demoted = 0;
-  for (const { id } of agents) {
-    const promotion = await promoteEarnedReviewer(id);
-    if (promotion.ok && promotion.changed) promoted++;
-    const demotion = await demoteFromSilence(id);
-    if (demotion.ok && demotion.changed) demoted++;
-  }
-  return { promoted, demoted };
+  return sweepLevelPromotions(project.tenantId);
 }

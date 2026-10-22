@@ -6,6 +6,11 @@ vi.mock("@/lib/agent-api/web-events", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/agent-api/web-events")>()),
   publishWebEvent,
 }));
+const publish = vi.hoisted(() => vi.fn(async () => ({ id: "evt-1" })));
+vi.mock("@/lib/agent-api/events", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/agent-api/events")>()),
+  publish,
+}));
 
 // #425: run as a member of the Zedu tenant.
 vi.mock("@/lib/tenant-context", async (importOriginal) => ({
@@ -37,10 +42,12 @@ vi.mock("@/lib/tenant-access", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bug: { findUnique: vi.fn() },
-    user: { findUnique: vi.fn() },
+    user: { findUnique: vi.fn(), findFirst: vi.fn() },
     issueType: { findUnique: vi.fn() },
     category: { findUnique: vi.fn(), findFirst: vi.fn() },
+    projectArea: { findFirst: vi.fn() },
     milestone: { findUnique: vi.fn() },
+    issueClaim: { findFirst: vi.fn() },
     $transaction: vi.fn(),
   },
 }));
@@ -51,14 +58,16 @@ import { currentTenantAccess } from "@/lib/tenant-access";
 import { notifyLater } from "@/lib/notify";
 import { TICKET_ASSIGN_ERRORS } from "@/lib/ticket-assignment";
 import { TICKET_TRIAGE_ERRORS } from "@/lib/ticket-triage";
-import { updateBugAction } from "./issues";
+import { assignBugAction, closeBugAction, reopenBugAction, updateBugAction } from "./issues";
 
 const db = prisma as unknown as {
   bug: { findUnique: ReturnType<typeof vi.fn> };
-  user: { findUnique: ReturnType<typeof vi.fn> };
+  user: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   issueType: { findUnique: ReturnType<typeof vi.fn> };
   category: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
+  projectArea: { findFirst: ReturnType<typeof vi.fn> };
   milestone: { findUnique: ReturnType<typeof vi.fn> };
+  issueClaim: { findFirst: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 const mockUser = requireUser as unknown as ReturnType<typeof vi.fn>;
@@ -72,11 +81,14 @@ let written: Record<string, unknown> | null;
 let activities: string[] = [];
 let awarded: Array<Record<string, unknown>> = [];
 let claimReleases: Array<Record<string, unknown>> = [];
+let activeClaimsMock: Array<{ id: string; agentId: string; beneficiaryUserId: string }> = [];
 
 function issue(assigneeId: string | null, extra: Record<string, unknown> = {}) {
   return {
     id: "bug1",
     tenantId: "tenant-zedu",
+    projectId: "project-zedu",
+    areaId: null,
     title: "A bug",
     status: "open",
     severity: "medium",
@@ -87,6 +99,7 @@ function issue(assigneeId: string | null, extra: Record<string, unknown> = {}) {
     isDeleted: false,
     assignee: assigneeId ? { id: assigneeId, name: assigneeId } : null,
     category: null,
+    area: null,
     type: null,
     ...extra,
   };
@@ -110,12 +123,19 @@ beforeEach(() => {
   activities = [];
   awarded = [];
   claimReleases = [];
+  activeClaimsMock = [];
   db.user.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({ name: where.id }));
+  db.user.findFirst.mockImplementation(async ({ where }: { where: { id: string } }) => ({ name: where.id }));
   db.issueType.findUnique.mockResolvedValue({ id: "t1", name: "Fix", isActive: true });
   db.category.findFirst.mockResolvedValue({ id: "c1", name: "Web", tenantId: "tenant-zedu" });
+  db.projectArea.findFirst.mockResolvedValue({ id: "area-web", name: "Frontend" });
+  db.issueClaim.findFirst.mockResolvedValue({ id: "claim-1" });
   db.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
     fn({
-      bug: { update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => (written = data)) },
+      bug: {
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => (written = data)),
+        findUnique: vi.fn(async () => ({ projectId: null })),
+      },
       bugActivity: {
         createMany: vi.fn(async ({ data }: { data: Array<{ type: string }> }) => {
           activities = data.map((entry) => entry.type);
@@ -124,8 +144,10 @@ beforeEach(() => {
       // Used once assignees auto-watch issues (#216).
       issueWatch: { createMany: vi.fn() },
       issueClaim: {
+        findMany: vi.fn(async () => activeClaimsMock),
         updateMany: vi.fn(async (input: Record<string, unknown>) => { claimReleases.push(input); return { count: 1 }; }),
       },
+      projectArea: { findFirst: db.projectArea.findFirst },
       // #428: the points ledger.
       pointEntry: {
         createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
@@ -142,10 +164,10 @@ describe("updateBugAction authorization (#218)", () => {
     // [who, current assignee, form, expected error or null, expected written data]
     ["user", null, { status: "resolved" }, TICKET_TRIAGE_ERRORS.statusUnauthorized, null],
     ["user", OTHER, { status: "resolved" }, TICKET_TRIAGE_ERRORS.statusUnauthorized, null],
-    ["user", null, { assigneeId: ME }, null, { assigneeId: ME }],
+    ["user", null, { assigneeId: ME }, TICKET_ASSIGN_ERRORS.needsAgentClaim, null],
     ["user", null, { assigneeId: ME, status: "resolved" }, TICKET_TRIAGE_ERRORS.statusUnauthorized, null],
     ["user", null, { assigneeId: ME, status: "open" }, TICKET_TRIAGE_ERRORS.statusUnauthorized, null],
-    ["user", OTHER, { assigneeId: ME }, TICKET_ASSIGN_ERRORS.unauthorized, null],
+    ["user", OTHER, { assigneeId: ME }, TICKET_ASSIGN_ERRORS.needsAgentClaim, null],
     ["user", ME, { status: "resolved" }, null, { status: "resolved" }],
     ["user", ME, { status: "in_progress", severity: "critical", typeId: "t1", categoryId: "c1" }, null, { status: "in_progress" }],
     ["user", ME, { assigneeId: OTHER }, TICKET_ASSIGN_ERRORS.unauthorized, null],
@@ -162,9 +184,37 @@ describe("updateBugAction authorization (#218)", () => {
       } else {
         expect(result).toEqual({ ok: true });
         expect(written).toEqual(data);
+        if (data && "assigneeId" in data && data.assigneeId) {
+          expect(db.user.findFirst).toHaveBeenCalledWith({
+            where: { id: data.assigneeId, memberships: { some: { tenantId: "tenant-zedu" } } },
+            select: { name: true },
+          });
+        }
       }
     },
   );
+
+  it("refuses a status change when the assignee has no active claim", async () => {
+    db.issueClaim.findFirst.mockResolvedValue(null);
+    const result = await run("user", ME, { status: "in_progress" });
+    expect(result).toEqual({ error: TICKET_ASSIGN_ERRORS.needsAgentClaim });
+    expect(written).toBeNull();
+  });
+
+  it("rejects an assignee who is not a member of the issue tenant", async () => {
+    mockUser.mockResolvedValue({ id: ME, name: "Me", role: "admin" });
+    db.bug.findUnique.mockResolvedValue(issue(null));
+    db.user.findFirst.mockResolvedValue(null);
+
+    await expect(updateBugAction("bug1", form({ assigneeId: SOMEONE }))).resolves.toEqual({
+      error: "Assignee not found in this workspace",
+    });
+    expect(db.user.findFirst).toHaveBeenCalledWith({
+      where: { id: SOMEONE, memberships: { some: { tenantId: "tenant-zedu" } } },
+      select: { name: true },
+    });
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
 
   it("refuses to update a deleted issue", async () => {
     mockUser.mockResolvedValue({ id: ME, name: "Me", role: "admin" });
@@ -183,6 +233,16 @@ describe("updateBugAction authorization (#218)", () => {
     vi.clearAllMocks();
     await run("admin", null, { status: "open" });
     expect(notifyLater).not.toHaveBeenCalled();
+  });
+
+  it("lets admins assign an area from the issue's project and logs it", async () => {
+    await expect(run("admin", null, { areaId: "area-web" })).resolves.toEqual({ ok: true });
+    expect(db.projectArea.findFirst).toHaveBeenCalledWith({
+      where: { id: "area-web", projectId: "project-zedu" },
+      select: { id: true, name: true },
+    });
+    expect(written).toEqual({ areaId: "area-web" });
+    expect(activities).toContain("area_changed");
   });
 });
 
@@ -255,6 +315,21 @@ describe("milestones in triage (#289)", () => {
     db.milestone.findUnique.mockResolvedValue({ title: "v2.3", isClosed: true });
     const result = await updateBugAction("bug1", form({ milestoneId: "m0" }));
     expect(result.error).toMatch(/closed/);
+    expect(written).toBeNull();
+  });
+
+  it("refuses a milestone that belongs to another organization", async () => {
+    mockUser.mockResolvedValue({ id: ME, name: "Me", role: "admin" });
+    db.bug.findUnique.mockResolvedValue(withMilestone(null));
+    db.milestone.findUnique.mockResolvedValue(null);
+    const result = await updateBugAction("bug1", form({ milestoneId: "other-tenant-milestone" }));
+    expect(result.error).toMatch(/no longer exists/);
+    expect(db.milestone.findUnique).toHaveBeenCalledWith({
+      where: {
+        id_tenantId: { id: "other-tenant-milestone", tenantId: "tenant-zedu" },
+      },
+      select: { title: true, isClosed: true },
+    });
     expect(written).toBeNull();
   });
 
@@ -337,7 +412,7 @@ describe("solver points on resolve (#428)", () => {
   });
 });
 
-describe("agents hear about triage in the web app (#600)", () => {
+describe("agents hear about triage in the web app (#600, #656)", () => {
   it("publishes issue.updated with the new status, inside the update", async () => {
     await run("user", ME, { status: "resolved" });
     expect(publishWebEvent).toHaveBeenCalledWith(
@@ -347,6 +422,92 @@ describe("agents hear about triage in the web app (#600)", () => {
         type: "issue.updated",
         actorUserId: expect.any(String),
         payload: expect.objectContaining({ changed: expect.arrayContaining(["status"]), values: expect.objectContaining({ status: "resolved" }) }),
+      }),
+    );
+  });
+
+  it("publishes claim.released events when active claims are released on resolution", async () => {
+    activeClaimsMock = [
+      { id: "claim-1", agentId: "agent-alpha", beneficiaryUserId: "user-alpha" },
+      { id: "claim-2", agentId: "agent-beta", beneficiaryUserId: "user-beta" },
+    ];
+    await run("user", ME, { status: "resolved" });
+    expect(publish).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: "tenant-zedu",
+        type: "claim.released",
+        actorAgentId: "agent-alpha",
+        bugId: "bug1",
+        payload: expect.objectContaining({
+          claimId: "claim-1",
+          issueId: "bug1",
+          beneficiaryUserId: "user-alpha",
+          reason: "resolved",
+        }),
+      }),
+    );
+    expect(publish).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: "tenant-zedu",
+        type: "claim.released",
+        actorAgentId: "agent-beta",
+        bugId: "bug1",
+        payload: expect.objectContaining({
+          claimId: "claim-2",
+          issueId: "bug1",
+          beneficiaryUserId: "user-beta",
+          reason: "resolved",
+        }),
+      }),
+    );
+  });
+
+  it("closeBugAction closes issue, records note, and emits issue.updated", async () => {
+    mockUser.mockResolvedValue({ id: ME, name: "Me", role: "user" });
+    db.bug.findUnique.mockResolvedValue(issue(ME));
+    const result = await closeBugAction("bug1", "Completed in PR");
+    expect(result).toEqual({ ok: true });
+    expect(written).toEqual(expect.objectContaining({ status: "closed" }));
+    expect(publishWebEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        bugId: "bug1",
+        type: "issue.updated",
+        payload: expect.objectContaining({ values: expect.objectContaining({ status: "closed" }) }),
+      }),
+    );
+  });
+
+  it("reopenBugAction sets status to open and emits issue.updated", async () => {
+    mockUser.mockResolvedValue({ id: ME, name: "Me", role: "user" });
+    db.bug.findUnique.mockResolvedValue(issue(ME, { status: "closed" }));
+    const result = await reopenBugAction("bug1");
+    expect(result).toEqual({ ok: true });
+    expect(written).toEqual(expect.objectContaining({ status: "open" }));
+    expect(publishWebEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        bugId: "bug1",
+        type: "issue.updated",
+        payload: expect.objectContaining({ values: expect.objectContaining({ status: "open" }) }),
+      }),
+    );
+  });
+
+  it("assignBugAction assigns issue and emits issue.updated", async () => {
+    mockUser.mockResolvedValue({ id: ME, name: "Me", role: "admin" });
+    db.bug.findUnique.mockResolvedValue(issue(null));
+    const result = await assignBugAction("bug1", SOMEONE);
+    expect(result).toEqual({ ok: true });
+    expect(written).toEqual(expect.objectContaining({ assigneeId: SOMEONE }));
+    expect(publishWebEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        bugId: "bug1",
+        type: "issue.updated",
+        payload: expect.objectContaining({ values: expect.objectContaining({ assigneeId: SOMEONE }) }),
       }),
     );
   });

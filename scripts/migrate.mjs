@@ -1,5 +1,8 @@
 import { execSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, unlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { databaseHost, migrationDatabaseUrl } from "./migration-database-url.mjs";
 
 /**
  * Container start step: apply pending Prisma migrations, nothing else (#112).
@@ -31,16 +34,15 @@ function stopOnFailure() {
   );
 }
 
-let url = process.env.DATABASE_URL;
-if (url) {
-  url = url.trim();
-  if (
-    (url.startsWith('"') && url.endsWith('"')) ||
-    (url.startsWith("'") && url.endsWith("'"))
-  ) {
-    url = url.slice(1, -1).trim();
+const pooledUrl = process.env.DATABASE_URL;
+const migrationUrl = migrationDatabaseUrl(pooledUrl, process.env.DIRECT_URL);
+if (migrationUrl) {
+  process.env.DATABASE_URL = migrationUrl;
+  if (migrationUrl !== pooledUrl) {
+    console.log(
+      `[db:migrate] Migrations use a direct connection (${databaseHost(migrationUrl)}). The app keeps the pooled URL.`,
+    );
   }
-  process.env.DATABASE_URL = url;
 }
 
 if (!process.env.DATABASE_URL) {
@@ -77,31 +79,46 @@ const userSettingsMigrations = [
 ];
 const agentPlatformMigration = "20261021000000_agent_platform";
 const agentKeyProjectScopeMigration = "20261022120000_agent_key_project_scope";
+const initMigration = "20261014193427_init";
 const redesignPreviewMigration = "20261022000000_redesign_mockups_and_choice";
 const disputeRequestedRoleMigration = "20261022120000_dispute_requested_role";
 const defaultProjectKeyMigration = "20261022150000_default_project_agent_key";
 const issueBidsMigration = "20261022160000_issue_bids";
 
-function runPrisma(args, inherit = false) {
-  return execSync(`${prismaBin} ${args}`, {
-    stdio: inherit ? "inherit" : "pipe",
-    encoding: "utf8",
-    env: process.env,
-  });
+function runPrisma(args) {
+  try {
+    const stdout = execSync(`${prismaBin} ${args}`, {
+      encoding: "utf8",
+      env: process.env,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    if (stdout) process.stdout.write(stdout);
+    return stdout;
+  } catch (error) {
+    const stdout = typeof error.stdout === "string" ? error.stdout : "";
+    const stderr = typeof error.stderr === "string" ? error.stderr : "";
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    const wrapped = new Error([stderr, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n"));
+    throw wrapped;
+  }
 }
 
 function recordApplied(name) {
   try {
-    runPrisma(`migrate resolve --applied ${name}`, true);
+    runPrisma(`migrate resolve --applied ${name}`);
     console.log(`[db:migrate] Recorded ${name} as applied.`);
+    return true;
   } catch (resolveError) {
     const message = resolveError instanceof Error ? resolveError.message : String(resolveError);
     console.log(`[db:migrate] ${name} was already recorded:`, message.split("\n")[0]);
-    if (/failed|P3018|P3009/i.test(message)) {
+    if (/already recorded|already applied|P3008/i.test(message)) return true;
+    if (/failed|P3018|P3009|P3012/i.test(message)) {
       try {
-        runPrisma(`migrate resolve --rolled-back ${name}`, true);
-        runPrisma(`migrate resolve --applied ${name}`, true);
+        runPrisma(`migrate resolve --rolled-back ${name}`);
+        runPrisma(`migrate resolve --applied ${name}`);
         console.log(`[db:migrate] Recorded ${name} as applied.`);
+        return true;
       } catch (retryResolveError) {
         console.error(
           `[db:migrate] Could not record ${name}:`,
@@ -109,26 +126,102 @@ function recordApplied(name) {
             ? retryResolveError.message.split("\n")[0]
             : retryResolveError,
         );
+        return false;
       }
+    }
+    return false;
+  }
+}
+
+function failedMigrationName(text) {
+  const started = text.match(/The `([^`]+)` migration started at [^\n]* failed/);
+  if (started) return started[1];
+  const named = text.match(/Migration name:\s*(\S+)/);
+  return named ? named[1] : null;
+}
+
+function isDuplicateObjectFailure(text) {
+  return (
+    /P3018/.test(text) &&
+    (/already exists/.test(text) || /\b42P07\b/.test(text) || /\b42701\b/.test(text) || /\b42710\b/.test(text))
+  );
+}
+
+function initTablesPresent() {
+  const file = join(tmpdir(), "ziki-init-probe.sql");
+  writeFileSync(
+    file,
+    "DO $$ BEGIN\n  IF to_regclass('public.\"User\"') IS NULL THEN\n    RAISE EXCEPTION 'missing User';\n  END IF;\nEND $$;\n",
+  );
+  try {
+    runPrisma(`db execute --schema prisma/schema.prisma --file ${JSON.stringify(file)}`);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[db:migrate] Init schema probe did not find User:", message.split("\n")[0]);
+    return false;
+  } finally {
+    try {
+      unlinkSync(file);
+    } catch {
+      // The probe file is only a signal. A leftover does not change the database.
     }
   }
 }
 
+function baselineStuckMigrations(initialText) {
+  let text = initialText;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const name = failedMigrationName(text);
+    if (!name) return false;
+    if (/P3009/.test(text)) {
+      if (name !== initMigration) {
+        console.error(`[db:migrate] ${name} is recorded as failed. Not marking it applied.`);
+        return false;
+      }
+      if (!initTablesPresent()) return false;
+      console.log("[db:migrate] Init is recorded as failed but User already exists. Recording it as applied.");
+    } else if (isDuplicateObjectFailure(text)) {
+      console.log(`[db:migrate] ${name} failed because the objects already exist. Recording it as applied.`);
+    } else {
+      return false;
+    }
+    if (!recordApplied(name)) return false;
+    try {
+      deploy();
+      return true;
+    } catch (error) {
+      text = error instanceof Error ? error.message : String(error);
+      console.error("[db:migrate] prisma migrate deploy encountered error:", text);
+    }
+  }
+  console.error("[db:migrate] Stopped baselining after 80 attempts.");
+  return false;
+}
+
 function deploy() {
   console.log(`[db:migrate] Running ${prismaBin} migrate deploy...`);
-  runPrisma("migrate deploy", true);
+  runPrisma("migrate deploy");
   console.log("[db:migrate] Migrations applied.");
 }
 
 let firstDeployFailed = false;
+let deployErrorText = "";
 try {
   deploy();
 } catch (error) {
   firstDeployFailed = true;
-  console.error(
-    "[db:migrate] prisma migrate deploy encountered error:",
-    error instanceof Error ? error.message : String(error),
-  );
+  deployErrorText = error instanceof Error ? error.message : String(error);
+  console.error("[db:migrate] prisma migrate deploy encountered error:", deployErrorText);
+}
+
+// Coolify Postgres has 20261014193427_init recorded as failed since 2026-10-15.
+// Deploy refuses to continue (P3009), the server never listens, and the new
+// container is rolled back. The live app already has User, so mark that row
+// applied and retry. A later migration that only fails because its objects
+// already exist is recorded the same way. Anything else still stops startup.
+if (firstDeployFailed && baselineStuckMigrations(deployErrorText)) {
+  firstDeployFailed = false;
 }
 
 // A normal container start runs `migrate deploy` only (#581). The repair

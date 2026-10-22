@@ -24,6 +24,8 @@ const eslintConfig = defineConfig([
   // Override default ignores of eslint-config-next.
   globalIgnores([
     ".worktrees/**",
+    // Standalone packages have their own toolchain (packages/*/package.json).
+    "packages/**",
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",

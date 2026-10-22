@@ -15,7 +15,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { MilestoneProgressBar } from "@/components/milestone-progress";
 import { MilestoneDue } from "@/components/milestone-due";
-import type { MilestoneProgress } from "@/lib/milestones";
+import { milestoneIssuesHref, type MilestoneProgress } from "@/lib/milestones";
 
 export type ManagedMilestone = {
   id: string;
@@ -48,8 +48,14 @@ export function MilestoneManager({ milestones }: { milestones: ManagedMilestone[
     setError(null);
   };
 
+   /**
+   * Handles milestone form submission.
+   * Ignores clicks while a save action is pending to prevent duplicates.
+   */
   const save = (event: React.FormEvent) => {
     event.preventDefault();
+    if (pending) return;
+    // ...
     const fd = new FormData();
     fd.set("title", draft.title);
     fd.set("description", draft.description);
@@ -169,7 +175,7 @@ export function MilestoneManager({ milestones }: { milestones: ManagedMilestone[
             <li key={m.id} className="grid gap-3 p-4 sm:grid-cols-[1fr_14rem_auto] sm:items-center">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Link href={`/issues?milestone=${m.id}`} className="font-medium text-slate-900 hover:underline">
+                  <Link href={milestoneIssuesHref(m.id)} className="font-medium text-slate-900 hover:underline">
                     {m.title}
                   </Link>
                   <MilestoneDue due={m.dueDate} isClosed={m.isClosed} />

@@ -271,7 +271,7 @@ describe("CreateBugForm optimistic submission", () => {
     // Technical fields are visible in detailed mode
     expect(screen.getByLabelText("Platform")).toBeDefined();
     expect(screen.getByLabelText("Type")).toBeDefined();
-    expect(screen.getByLabelText("Proof links (GitHub)")).toBeDefined();
+    expect(screen.getByLabelText("GitHub PR")).toBeDefined();
 
     // Switch to Quick report mode
     await user.click(screen.getByRole("button", { name: "Quick report" }));
@@ -279,7 +279,7 @@ describe("CreateBugForm optimistic submission", () => {
     // Technical fields should now be omitted from view
     expect(screen.queryByLabelText("Platform")).toBeNull();
     expect(screen.queryByLabelText("Type")).toBeNull();
-    expect(screen.queryByLabelText("Proof links (GitHub)")).toBeNull();
+    expect(screen.queryByLabelText("GitHub PR")).toBeNull();
 
     // Describe the issue in plain words
     await user.clear(descriptionTextarea());

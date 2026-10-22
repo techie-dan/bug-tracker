@@ -212,10 +212,12 @@ describe("changeMembershipRole", () => {
       update: vi.fn(async () => ({})),
     };
     const membershipChange = { create: vi.fn(async () => ({})) };
+    const user = { update: vi.fn(async () => ({})) };
     const db = {
       membership,
       membershipChange,
-      $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ membership, membershipChange }),
+      user,
+      $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ membership, membershipChange, user }),
     };
 
     const result = await changeMembershipRole(db as never, { id: "owner", role: "user" }, {
@@ -228,6 +230,10 @@ describe("changeMembershipRole", () => {
     expect(membership.update).toHaveBeenCalledWith({
       where: { id: "mem-ada" },
       data: { role: "admin" },
+    });
+    expect(user.update).toHaveBeenCalledWith({
+      where: { id: "ada" },
+      data: { sessionVersion: { increment: 1 } },
     });
     expect(membershipChange.create).toHaveBeenCalledWith({
       data: {

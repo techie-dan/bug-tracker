@@ -4,12 +4,21 @@ import { agentIssueRequest } from "@/lib/agent-api/issues";
 import { prisma } from "@/lib/prisma";
 import { pointBalance } from "@/lib/points/balance";
 
+const isoDateString = z.string().refine((val) => {
+  // Strict ISO-8601: date-only `YYYY-MM-DD` or a full datetime. This rejects
+  // values like `1` that `new Date()` happens to parse (1 January 2001).
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  const dateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+  if (!dateOnly.test(val) && !dateTime.test(val)) return false;
+  return !Number.isNaN(new Date(val).getTime());
+}, "must be an ISO-8601 date or datetime");
+
 const balanceQuerySchema = z
   .object({
-    from: z.coerce.date().optional(),
-    to: z.coerce.date().optional(),
+    from: isoDateString.optional(),
+    to: isoDateString.optional(),
   })
-  .refine((query) => !query.from || !query.to || query.from.getTime() <= query.to.getTime(), {
+  .refine((query) => !query.from || !query.to || new Date(query.from).getTime() <= new Date(query.to).getTime(), {
     message: "`from` must not be after `to`.",
   });
 

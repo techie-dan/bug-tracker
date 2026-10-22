@@ -1,8 +1,35 @@
 import type { ReactNode } from "react";
 import { RichText } from "@/components/rich-text";
-import { tokenizeMentions } from "@/lib/mentions";
+import { parseAgentMentionId, tokenizeMentions } from "@/lib/mentions";
 
 type UserOption = { id: string; name: string };
+
+/** The bot badge on agent mentions and agent suggestions (#603). */
+export function AgentMentionBadge() {
+  return (
+    <span
+      className="rounded bg-slate-200/90 px-1 text-[10px] font-medium text-slate-700"
+      aria-hidden="true"
+    >
+      bot
+    </span>
+  );
+}
+
+function MentionPill({ name, id }: { name: string; id: string }) {
+  const agent = parseAgentMentionId(id) !== null;
+  return (
+    <span
+      title={agent ? `${name} (agent)` : name}
+      data-user-id={agent ? undefined : id}
+      data-agent-id={agent ? parseAgentMentionId(id) ?? undefined : undefined}
+      className="mx-0.5 inline-flex items-center gap-1 rounded-md bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-800 ring-1 ring-inset ring-teal-200"
+    >
+      @{name}
+      {agent ? <AgentMentionBadge /> : null}
+    </span>
+  );
+}
 
 function MentionSpans({
   text,
@@ -23,28 +50,10 @@ function MentionSpans({
       if (!realName) {
         return <span key={`t-${index}`}>@{token.name}</span>;
       }
-      return (
-        <span
-          key={`m-${index}-${token.userId}`}
-          title={realName}
-          data-user-id={token.userId}
-          className="mx-0.5 inline-flex items-center rounded-md bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-800 ring-1 ring-inset ring-teal-200"
-        >
-          @{realName}
-        </span>
-      );
+      return <MentionPill key={`m-${index}-${token.userId}`} name={realName} id={token.userId} />;
     }
 
-    return (
-      <span
-        key={`m-${index}-${token.userId}`}
-        title={token.name}
-        data-user-id={token.userId}
-        className="mx-0.5 inline-flex items-center rounded-md bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-800 ring-1 ring-inset ring-teal-200"
-      >
-        @{token.name}
-      </span>
-    );
+    return <MentionPill key={`m-${index}-${token.userId}`} name={token.name} id={token.userId} />;
   });
 }
 

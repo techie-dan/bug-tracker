@@ -25,15 +25,42 @@ const session = vi.mocked(resolveSessionUserId) as unknown as ReturnType<typeof 
 const limit = vi.mocked(consumeRateLimit) as unknown as ReturnType<typeof vi.fn>;
 const create = vi.mocked(prisma.attachment.create) as unknown as ReturnType<typeof vi.fn>;
 
-function makeUploadRequest(file?: File | string | null) {
+function makeUploadRequest(file?: File | string | null, contentLength?: number) {
   const formData = new FormData();
   if (file !== undefined && file !== null) {
     formData.append("file", file as unknown as Blob);
   }
-  return new NextRequest("http://localhost:3000/api/uploads", {
+  const request = new NextRequest("http://localhost:3000/api/uploads", {
     method: "POST",
     body: formData,
   });
+  if (contentLength !== undefined) request.headers.set("content-length", String(contentLength));
+  return request;
+}
+
+/** A chunked body (no Content-Length) that records how much of it was pulled. */
+function chunkedUpload(totalBytes: number, chunkSize = 512 * 1024) {
+  let sent = 0;
+  let pulls = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls++;
+      if (sent >= totalBytes) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(chunkSize, totalBytes - sent);
+      sent += size;
+      controller.enqueue(new Uint8Array(size));
+    },
+  });
+  const init = {
+    method: "POST",
+    body: stream,
+    headers: { "content-type": "multipart/form-data; boundary=test" },
+    duplex: "half",
+  } as unknown as ConstructorParameters<typeof NextRequest>[1];
+  return { request: new NextRequest("http://localhost:3000/api/uploads", init), pulls: () => pulls };
 }
 
 describe("POST /api/uploads", () => {
@@ -58,6 +85,56 @@ describe("POST /api/uploads", () => {
     const res = await POST(req);
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "Too many uploads. Slow down." });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized request before parsing its multipart body", async () => {
+    const req = makeUploadRequest(
+      new File(["content"], "test.txt", { type: "text/plain" }),
+      40 * 1024 * 1024,
+    );
+    const formData = vi.fn();
+    req.formData = formData;
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "File is too large (max 5 MB)." });
+    expect(formData).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when a file exceeds 5 MB without a content-length header", async () => {
+    const oversized = new Uint8Array(5 * 1024 * 1024 + 1);
+    oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    const res = await POST(makeUploadRequest(new File([oversized], "large.png", { type: "image/png" })));
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "File is too large (max 5 MB)." });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("stops a chunked body over the cap instead of buffering all of it (#485)", async () => {
+    const { request, pulls } = chunkedUpload(8 * 1024 * 1024);
+
+    const res = await POST(request);
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "File is too large (max 5 MB)." });
+    // 8 MB in 512 KB chunks is 16 pulls; reading stopped near the 5 MB cap.
+    expect(pulls()).toBeLessThan(16);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-numeric content-length (#485)", async () => {
+    const req = makeUploadRequest(new File(["content"], "test.txt", { type: "text/plain" }));
+    req.headers.set("content-length", "abc");
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Send a valid Content-Length header." });
     expect(create).not.toHaveBeenCalled();
   });
 

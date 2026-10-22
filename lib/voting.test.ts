@@ -72,9 +72,10 @@ describe("calculateVoteChange", () => {
 
 describe("reconcileVoteCount (#362)", () => {
   it("calculates accurate voteCount from like and dislike counts", () => {
-    expect(reconcileVoteCount(5, 2)).toBe(3);
-    expect(reconcileVoteCount(0, 3)).toBe(-3);
-    expect(reconcileVoteCount(4, 4)).toBe(0);
+    // #1059: dislikes no longer count; the stored count is the upvotes.
+    expect(reconcileVoteCount(5, 2)).toBe(5);
+    expect(reconcileVoteCount(0, 3)).toBe(0);
+    expect(reconcileVoteCount(4, 4)).toBe(4);
     expect(reconcileVoteCount(0, 0)).toBe(0);
     expect(reconcileVoteCount(100, 0)).toBe(100);
   });

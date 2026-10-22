@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ensureWatching, isWatchingIssue, resolveWatchers } from "./watch";
+import { ensureWatching, resolveWatchers } from "./watch";
 
 describe("resolveWatchers (#216)", () => {
   it("includes the people involved by default", () => {
@@ -20,15 +20,6 @@ describe("resolveWatchers (#216)", () => {
     expect(
       resolveWatchers(["a", "a"], [{ userId: "a", watching: true }, { userId: "b", watching: true }]),
     ).toEqual(["a", "b"]);
-  });
-});
-
-describe("isWatchingIssue", () => {
-  it("follows an explicit row, else whether they're involved", () => {
-    expect(isWatchingIssue("u", ["u"], null)).toBe(true);
-    expect(isWatchingIssue("u", [], null)).toBe(false);
-    expect(isWatchingIssue("u", ["u"], { userId: "u", watching: false })).toBe(false);
-    expect(isWatchingIssue("u", [], { userId: "u", watching: true })).toBe(true);
   });
 });
 

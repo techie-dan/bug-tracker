@@ -6,7 +6,7 @@ describe("parseMineFilter", () => {
     expect(parseMineFilter("assigned")).toBe("assigned");
     expect(parseMineFilter(" Reported ")).toBe("reported");
     expect(parseMineFilter(" Created ")).toBe("created");
-    expect(parseMineFilter(" Mine ")).toBe("mine");
+    expect(parseMineFilter("watching")).toBe("watching");
   });
 
   it("uses the first value when the parameter is repeated", () => {
@@ -28,16 +28,15 @@ describe("mineFilterWhere", () => {
     expect(mineFilterWhere("created", "u1")).toEqual({ reporterId: "u1" });
   });
 
-  it("filters by combined reporter or assignee for mine view", () => {
-    expect(mineFilterWhere("mine", "u1")).toEqual({
-      AND: [{ OR: [{ reporterId: "u1" }, { assigneeId: "u1" }] }],
-    });
+  it("falls back to all issues for the retired mine view", () => {
+    expect(parseMineFilter(" Mine ")).toBeNull();
+    expect(parseMineFilter(["mine", "assigned"])).toBeNull();
+    expect(mineFilterWhere(parseMineFilter("mine"), "u1")).toEqual({});
   });
 
   it("does nothing without a filter or a user", () => {
     expect(mineFilterWhere(null, "u1")).toEqual({});
     expect(mineFilterWhere("assigned", undefined)).toEqual({});
     expect(mineFilterWhere("created", undefined)).toEqual({});
-    expect(mineFilterWhere("mine", undefined)).toEqual({});
   });
 });

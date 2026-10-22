@@ -350,25 +350,25 @@ export function AdminIssueTypesManager({
                   {type._count.bugs} issue{type._count.bugs === 1 ? "" : "s"}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <div className="flex items-center justify-end gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
                       type="button"
                       disabled={pending}
                       onClick={() => startEdit(type)}
-                      className="text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline"
+                      className="inline-flex min-h-11 items-center text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline sm:min-h-0"
                     >
                       Edit
                     </button>
-                    <span>·</span>
+                    <span aria-hidden="true">·</span>
                     <button
                       type="button"
                       disabled={pending}
                       onClick={() => handleToggle(type.id)}
-                      className="text-xs font-medium text-teal-700 hover:text-teal-900 hover:underline"
+                      className="inline-flex min-h-11 items-center text-xs font-medium text-teal-700 hover:text-teal-900 hover:underline sm:min-h-0"
                     >
                       {type.isActive ? "Deactivate" : "Activate"}
                     </button>
-                    <span>·</span>
+                    <span aria-hidden="true">·</span>
                     <button
                       type="button"
                       disabled={pending}
@@ -376,7 +376,7 @@ export function AdminIssueTypesManager({
                       // Clickable when in use, like the platform page: it
                       // explains why it cannot delete rather than looking
                       // dead (#314). So no not-allowed cursor either.
-                      className={`text-xs font-medium hover:underline ${
+                      className={`inline-flex min-h-11 items-center text-xs font-medium hover:underline sm:min-h-0 ${
                         type._count.bugs > 0
                           ? "text-slate-600 hover:text-slate-800"
                           : "text-red-600 hover:text-red-800"

@@ -52,7 +52,7 @@ export function CreateAgentForm({
     return (
       <div className="mt-4 space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4" role="status">
         <p className="text-sm font-medium text-slate-900">
-          {issued.name} is registered. Copy its key now: it won&apos;t be shown again.
+          {issued.name} is registered. Copy its key now. It stays on this page with the agent.
         </p>
         <label htmlFor="new-agent-key" className="sr-only">
           Agent key

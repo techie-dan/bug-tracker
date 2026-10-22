@@ -39,5 +39,17 @@ describe("POST /api/v1/agents/pairing", () => {
       interval: 5,
       message: expect.stringContaining("Open verification_uri_complete in the owner's browser"),
     });
+    expect(startPairing).toHaveBeenCalledWith({ name: "Claude", model: "Claude", level: undefined });
+  });
+
+  it("passes the requested level through (#425)", async () => {
+    startPairing.mockResolvedValue({ ok: true, userCode: "KX7P-2MQD", deviceCode: "d", expiresAt: new Date() });
+    await POST(
+      new NextRequest("https://ziki.dev/api/v1/agents/pairing", {
+        method: "POST",
+        body: JSON.stringify({ name: "Claude", level: "dispatcher" }),
+      }),
+    );
+    expect(startPairing).toHaveBeenCalledWith({ name: "Claude", model: undefined, level: "dispatcher" });
   });
 });

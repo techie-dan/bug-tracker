@@ -1,5 +1,6 @@
-import type { Status } from "@prisma/client";
+import type { Prisma, Status } from "@prisma/client";
 import { statusLabel } from "@/lib/labels";
+import { statuses } from "@/lib/validations/issue";
 
 /**
  * Resolved and closed issues are finished: nothing on them is waiting for
@@ -11,12 +12,66 @@ export function isDone(status: Status | string): boolean {
 }
 
 /**
- * The result-count line under the list heading, naming the status filter
+ * A single filter token that stands for every finished status. The stat grid
+ * shows one "Closed" number for resolved + closed work (#685); this is the
+ * token its tile links to, so the count on the tile and the list it opens
+ * always agree. It is a filter keyword, not a real `Status`.
+ */
+export const FINISHED_STATUS_FILTER = "finished";
+
+/** Statuses the `finished` filter token expands to. */
+export const FINISHED_STATUS_VALUES = ["resolved", "closed"] as const;
+
+/**
+ * The status filter a `?status=` value stands for: our own `finished` token,
+ * or a real status. `null` when the value filters nothing.
+ */
+export function statusFilterValues(value: string | undefined): Status[] | null {
+  if (!value) return null;
+  if (value === FINISHED_STATUS_FILTER) return [...FINISHED_STATUS_VALUES];
+  return (statuses as readonly string[]).includes(value) ? [value as Status] : null;
+}
+
+/**
+ * A Prisma status clause for a `?status=` value, or `undefined` when the value
+ * is not a filter we understand. One status is an equality; `finished` is an
+ * `in` over resolved + closed.
+ */
+export function statusFilterWhere(value: string | undefined): Prisma.BugWhereInput["status"] | undefined {
+  const values = statusFilterValues(value);
+  if (!values) return undefined;
+  return values.length === 1 ? values[0] : { in: values };
+}
+
+/** The result-count line under the list heading, naming the status filter
  * when one is applied so it is clear what is being left out — "12 open
  * issues", not "12 results" — and plain when none is.
  */
-export function resultCountText(count: number, status: Status | null): string {
+export function resultCountText(count: number, status: string | null): string {
   if (!status) return `${count} ${count === 1 ? "result" : "results"}`;
-  const label = statusLabel[status].toLowerCase();
+  const label =
+    status === FINISHED_STATUS_FILTER
+      ? "closed"
+      : ((statusLabel as Record<string, string>)[status] ?? status).toLowerCase();
   return `${count} ${label} ${count === 1 ? "issue" : "issues"}`;
+}
+
+/**
+ * #1058: the list shows live work by default. Resolved and closed issues are
+ * hidden until `?resolved=1`, or until a status filter asks for them.
+ */
+export const SHOW_RESOLVED_PARAM = "resolved";
+export const SHOW_RESOLVED = "1";
+export const LIVE_STATUS_VALUES = ["open", "in_progress"] as const;
+
+export function parseShowResolved(raw: string | string[] | null | undefined): boolean {
+  return (Array.isArray(raw) ? raw[0] : raw) === SHOW_RESOLVED;
+}
+
+/**
+ * The status clause the list uses when no status filter is set: live work
+ * only, unless resolved issues were asked for. `undefined` means no clause.
+ */
+export function defaultStatusWhere(showResolved: boolean): Prisma.BugWhereInput["status"] | undefined {
+  return showResolved ? undefined : { in: [...LIVE_STATUS_VALUES] };
 }

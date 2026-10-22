@@ -19,6 +19,9 @@ export function LoginForm({
   const showGoogleButton = googleEnabled;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Set once the password was right and the account has two-factor on (#648).
+  const [needsCode, setNeedsCode] = useState(false);
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   // True when the error is about the credentials, so both fields are marked
   // invalid and described by the one message (#309). It never says which of
@@ -28,6 +31,9 @@ export function LoginForm({
   useEffect(() => {
     if (credentialsInvalid) document.getElementById("email")?.focus();
   }, [credentialsInvalid]);
+  useEffect(() => {
+    if (needsCode) document.getElementById("totp")?.focus();
+  }, [needsCode]);
 
   const fieldAttrs = credentialsInvalid
     ? ({ "aria-invalid": true, "aria-describedby": "login-error" } as const)
@@ -43,6 +49,7 @@ export function LoginForm({
         const formData = new FormData();
         formData.set("email", email);
         formData.set("password", password);
+        if (needsCode) formData.set("totp", code);
         formData.set("callbackUrl", callbackUrl);
         startTransition(async () => {
           try {
@@ -50,6 +57,12 @@ export function LoginForm({
             if (result?.error) {
               setError(result.error);
               setCredentialsInvalid(Boolean(result.field));
+              if (result.needsCode) {
+                setNeedsCode(true);
+                setCode("");
+              } else {
+                setNeedsCode(false);
+              }
             }
             // Success uses server redirect() only — no client router.push
             // (avoids navigation storms with middleware redirects).
@@ -103,13 +116,36 @@ export function LoginForm({
           {...fieldAttrs}
         />
       </div>
+      {needsCode ? (
+        <div className="space-y-1.5">
+          <label htmlFor="totp" className="text-sm font-medium text-slate-700">
+            Authentication code
+          </label>
+          <Input
+            id="totp"
+            name="totp"
+            type="text"
+            inputMode="text"
+            autoComplete="one-time-code"
+            placeholder="123456"
+            required
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            aria-describedby="totp-help"
+          />
+          <p id="totp-help" className="text-xs text-slate-500">
+            Open your authenticator app and enter the 6-digit code. Lost your phone? Use one of
+            your backup codes instead.
+          </p>
+        </div>
+      ) : null}
       {error ? (
         <p id="login-error" className="text-sm text-red-600" role="alert">
           {error}
         </p>
       ) : null}
       <Button type="submit" className="w-full" disabled={pending}>
-        {pending ? "Signing in…" : "Sign in"}
+        {pending ? "Signing in…" : needsCode ? "Verify and sign in" : "Sign in"}
       </Button>
       {showGoogleButton ? (
         <>

@@ -3,6 +3,7 @@
 
 import axe from "axe-core";
 import { cleanup, render } from "@testing-library/react";
+import { labelInNameMismatches } from "@/lib/a11y/label-in-name";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CommentForm } from "./comment-form";
 import { CreateBugForm } from "./create-issue-form";
@@ -42,6 +43,8 @@ afterEach(() => cleanup());
  * axe-core needs a layout engine for two checks, and jsdom has none:
  * - `color-contrast` needs real computed colours and canvas.
  * - `region` assumes a full page with landmarks; these are isolated widgets.
+ * - `label-content-name-mismatch` needs layout to decide which text is visible,
+ *   so expectNoA11yViolations checks that from the text instead.
  * Everything else runs normally.
  */
 const AXE_OPTIONS: axe.RunOptions = {
@@ -57,6 +60,12 @@ async function expectNoA11yViolations(node: HTMLElement) {
   const violations = results.violations.map(
     (v) => `${v.id} (${v.impact ?? "n/a"}): ${v.help}`,
   );
+  // axe skips label-in-name here: jsdom reports no visible text. Check it from the text.
+  for (const mismatch of labelInNameMismatches(node)) {
+    violations.push(
+      `label-content-name-mismatch (serious): visible text "${mismatch.visible}" is not in the accessible name "${mismatch.name}"`,
+    );
+  }
   expect(violations).toEqual([]);
 }
 
@@ -74,11 +83,9 @@ describe("component accessibility (axe)", () => {
         bugId="b1"
         voteCount={3}
         likeCount={2}
-        dislikeCount={1}
         size="md"
         showAvatars
         likeVoters={[{ id: "u1", name: "Alice", image: null }]}
-        dislikeVoters={[{ id: "u2", name: "Bob", image: null }]}
       />,
     );
     await expectNoA11yViolations(container);

@@ -1,6 +1,8 @@
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import type { AgentContext } from "@/lib/agents/require-agent";
+import { resumeAfterWait } from "@/lib/claim-deadline";
+import { assertKeyProject, type AgentContext } from "@/lib/agents/require-agent";
 import { audit } from "@/lib/agents/audit";
 import { publish } from "@/lib/agent-api/events";
 import { notifyAgentQuestion } from "@/lib/agent-notifications";
@@ -19,28 +21,59 @@ import { IssueApiError } from "@/lib/agent-api/issues";
 
 const id = z.string().trim().min(1).max(191);
 
+export const escalationTypeValues = [
+  "question",
+  "work_authorization",
+  "blocker",
+  "scope_change",
+  "human_approval",
+] as const;
+
+export type EscalationTypeSlug = (typeof escalationTypeValues)[number];
+
+export const escalationTypeSchema = z.enum(escalationTypeValues);
+
 export const agentQuestionSchema = z
   .object({
     /** The issue the question is about, when there is one. */
     bugId: id.optional(),
     body: z.string().trim().min(3).max(2000),
+    type: escalationTypeSchema.optional(),
   })
   .strict();
+
+export const agentEscalationSchema = agentQuestionSchema;
 
 export const answerSchema = z.object({ answer: z.string().trim().min(1).max(2000) }).strict();
 
 export type AskAgentQuestionInput = z.infer<typeof agentQuestionSchema>;
+export type AskAgentEscalationInput = AskAgentQuestionInput;
+
+export type EscalationStatus = "open" | "resolved" | "dismissed";
+
+export function getEscalationStatus(answeredAt: Date | null | undefined, answer?: string | null): EscalationStatus {
+  if (!answeredAt) return "open";
+  if (answer && answer.toLowerCase().startsWith("dismissed")) return "dismissed";
+  return "resolved";
+}
 
 /** A contributor or above asks its owner. */
 export async function askAgentQuestion(agent: AgentContext, input: AskAgentQuestionInput) {
+  const effectiveBody = input.type ? `[${input.type}] ${input.body}` : input.body;
+  const escalationType = input.type ? slugToEscalationType(input.type) : classifyEscalation(input.body);
+  const typeSlug = input.type ?? escalationTypeToSlug(escalationType);
+
   const question = await prisma.$transaction(async (tx) => {
     let bugTitle: string | null = null;
     if (input.bugId) {
       const bug = await tx.bug.findFirst({
         where: { id: input.bugId, tenantId: agent.tenantId, isDeleted: false },
-        select: { id: true, title: true },
+        select: { id: true, title: true, projectId: true },
       });
       if (!bug) throw new IssueApiError(404, "Linked issue not found.");
+      // #412: a project-scoped key may only link its own project's issues,
+      // checked before anything (like the title) goes back to the caller.
+      assertKeyProject(agent, bug.projectId);
       bugTitle = bug.title;
     }
 
@@ -49,16 +82,26 @@ export async function askAgentQuestion(agent: AgentContext, input: AskAgentQuest
         agentId: agent.agentId,
         ownerUserId: agent.ownerId,
         bugId: input.bugId ?? null,
-        body: input.body,
+        body: effectiveBody,
       },
       select: { id: true, bugId: true, body: true, createdAt: true },
     });
 
-    await audit(agent, "question.asked", created.id, { bugId: created.bugId }, { db: tx, bugId: created.bugId });
+    if (created.bugId) {
+      // #606: asking about an issue the agent holds pauses that claim's
+      // clocks. Claim transitions lock the issue first, like the sweep does.
+      await tx.$queryRaw`SELECT "id" FROM "Bug" WHERE "id" = ${created.bugId} FOR NO KEY UPDATE`;
+      await tx.issueClaim.updateMany({
+        where: { bugId: created.bugId, agentId: agent.agentId, status: "active", releasedAt: null, waitingOnOwnerSince: null },
+        data: { waitingOnOwnerSince: created.createdAt },
+      });
+    }
+
+    await audit(agent, "question.asked", created.id, { bugId: created.bugId, type: typeSlug }, { db: tx, bugId: created.bugId });
     await publish(tx, {
       tenantId: agent.tenantId,
       type: "question.asked",
-      payload: { questionId: created.id, agentId: agent.agentId, bugId: created.bugId },
+      payload: { questionId: created.id, agentId: agent.agentId, bugId: created.bugId, type: typeSlug },
       actorAgentId: agent.agentId,
       bugId: created.bugId,
     });
@@ -76,8 +119,18 @@ export async function askAgentQuestion(agent: AgentContext, input: AskAgentQuest
     bugId: question.bugId,
     bugTitle: question.bugTitle,
   });
-  return question;
+
+  const parsed = parseEscalationBody(question.body);
+
+  return {
+    ...question,
+    body: parsed.cleanBody,
+    type: typeSlug,
+    status: "open" as const,
+  };
 }
+
+export const askAgentEscalation = askAgentQuestion;
 
 /** The asking agent reads its own question and the answer, once there is one. */
 export async function readAgentQuestion(agent: AgentContext, questionId: string) {
@@ -87,6 +140,24 @@ export async function readAgentQuestion(agent: AgentContext, questionId: string)
   });
   if (!question) throw new IssueApiError(404, "Question not found.");
   return question;
+}
+
+export async function readAgentEscalation(agent: AgentContext, escalationId: string) {
+  const question = await readAgentQuestion(agent, escalationId);
+  const parsed = parseEscalationBody(question.body);
+  const typeSlug = escalationTypeToSlug(parsed.type);
+  const status = getEscalationStatus(question.answeredAt, question.answer);
+
+  return {
+    id: question.id,
+    bugId: question.bugId,
+    body: parsed.cleanBody,
+    type: typeSlug,
+    status,
+    resolution: question.answer,
+    resolvedAt: question.answeredAt,
+    createdAt: question.createdAt,
+  };
 }
 
 /**
@@ -114,6 +185,7 @@ export async function answerAgentQuestion(userId: string, tenantId: string, ques
       data: { answer, answeredAt },
     });
     if (!updated.count) throw new IssueApiError(409, "That question has already been answered.");
+    if (question.bugId) await resumeWaitingClaim(tx, question.agentId, question.bugId, answeredAt);
 
     await audit({ agentId: question.agentId, tenantId }, "question.answered", questionId, { answeredAt }, {
       db: tx,
@@ -128,6 +200,34 @@ export async function answerAgentQuestion(userId: string, tenantId: string, ques
     });
 
     return { id: questionId, answer, answeredAt };
+  });
+}
+
+/**
+ * #606: once the agent has no unanswered question left on the issue, its
+ * paused claim runs again. The time spent waiting is added back to the
+ * delivery deadline and to the silence clock, so the wait costs the agent
+ * nothing.
+ */
+async function resumeWaitingClaim(tx: Prisma.TransactionClient, agentId: string, bugId: string, now: Date) {
+  await tx.$queryRaw`SELECT "id" FROM "Bug" WHERE "id" = ${bugId} FOR NO KEY UPDATE`;
+  const stillOpen = await tx.agentQuestion.count({ where: { agentId, bugId, answeredAt: null } });
+  if (stillOpen) return;
+  const claim = await tx.issueClaim.findFirst({
+    where: { bugId, agentId, status: "active", releasedAt: null, waitingOnOwnerSince: { not: null } },
+    select: { id: true, waitingOnOwnerSince: true, deliverBy: true, lastHeartbeatAt: true, claimedAt: true },
+  });
+  if (!claim?.waitingOnOwnerSince) return;
+  const since = claim.waitingOnOwnerSince;
+  const lastSeen = resumeAfterWait(claim.lastHeartbeatAt ?? claim.claimedAt, since, now);
+  await tx.issueClaim.update({
+    where: { id: claim.id },
+    data: {
+      waitingOnOwnerSince: null,
+      deliverBy: resumeAfterWait(claim.deliverBy, since, now),
+      // A heartbeat sent during the wait would land in the future; cap it at now.
+      lastHeartbeatAt: lastSeen && lastSeen.getTime() > now.getTime() ? now : lastSeen,
+    },
   });
 }
 
@@ -186,6 +286,51 @@ export type EscalationType =
   | "Question"
   | "Scope Expansion"
   | "Human Approval";
+
+export function escalationTypeToSlug(type: EscalationType): EscalationTypeSlug {
+  switch (type) {
+    case "Blocker":
+      return "blocker";
+    case "Work Authorization":
+      return "work_authorization";
+    case "Scope Expansion":
+      return "scope_change";
+    case "Human Approval":
+      return "human_approval";
+    case "Question":
+    default:
+      return "question";
+  }
+}
+
+export function slugToEscalationType(slug: EscalationTypeSlug | string): EscalationType {
+  switch (slug) {
+    case "blocker":
+      return "Blocker";
+    case "work_authorization":
+      return "Work Authorization";
+    case "scope_change":
+      return "Scope Expansion";
+    case "human_approval":
+      return "Human Approval";
+    case "question":
+    default:
+      return "Question";
+  }
+}
+
+export function parseEscalationBody(rawBody: string): { type: EscalationType; cleanBody: string } {
+  const match = rawBody.match(/^\[([a-zA-Z\s_]+)\]\s*([\s\S]*)$/);
+  if (match) {
+    const tag = match[1].toLowerCase().replace(/\s+/g, "_");
+    if (tag === "blocker") return { type: "Blocker", cleanBody: match[2] };
+    if (tag === "work_authorization" || tag === "authorization") return { type: "Work Authorization", cleanBody: match[2] };
+    if (tag === "scope_change" || tag === "scope_expansion") return { type: "Scope Expansion", cleanBody: match[2] };
+    if (tag === "human_approval" || tag === "approval") return { type: "Human Approval", cleanBody: match[2] };
+    if (tag === "question") return { type: "Question", cleanBody: match[2] };
+  }
+  return { type: classifyEscalation(rawBody), cleanBody: rawBody };
+}
 
 /**
  * Classifies an agent escalation into a standard human-actionable type (#763).

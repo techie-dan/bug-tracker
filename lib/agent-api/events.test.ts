@@ -17,8 +17,10 @@ import {
   encodeEventCursor,
   decodeEventCursor,
   parseEventCursor,
+  parseEventFilters,
   listEvents,
   publish,
+  AGENT_EVENT_TYPES,
   type EventCursor,
 } from "./events";
 
@@ -134,6 +136,41 @@ describe("parseEventCursor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseEventFilters (#602)
+// ---------------------------------------------------------------------------
+
+describe("parseEventFilters", () => {
+  it("returns no filters when none are given", () => {
+    expect(parseEventFilters(new URLSearchParams())).toEqual({});
+  });
+
+  it("splits exact types and prefixes, trimming and deduping", () => {
+    expect(parseEventFilters(new URLSearchParams({ types: "comment.created, claim.*,comment.created,," })))
+      .toEqual({ types: ["comment.created"], typePrefixes: ["claim."] });
+  });
+
+  it("reads projectId and bugId", () => {
+    expect(parseEventFilters(new URLSearchParams({ projectId: "proj-1", bugId: "bug-1" })))
+      .toEqual({ projectId: "proj-1", bugId: "bug-1" });
+  });
+
+  it("rejects unknown types and lists the valid ones", () => {
+    for (const types of ["nope", "comment.created,issue.nope", "*", ".*", "nope.*", "claim", ""]) {
+      const result = parseEventFilters(new URLSearchParams({ types }));
+      expect(result, types).toMatchObject({ validTypes: AGENT_EVENT_TYPES });
+      expect("error" in result && result.error, types).toBeTruthy();
+    }
+    expect(parseEventFilters(new URLSearchParams({ types: "comment.created,issue.nope" })))
+      .toMatchObject({ error: "Unknown event type: issue.nope." });
+  });
+
+  it("rejects blank or oversized ids", () => {
+    expect(parseEventFilters(new URLSearchParams({ projectId: " " }))).toEqual({ error: "Invalid projectId." });
+    expect(parseEventFilters(new URLSearchParams({ bugId: "x".repeat(192) }))).toEqual({ error: "Invalid bugId." });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // listEvents
 // ---------------------------------------------------------------------------
 
@@ -183,6 +220,36 @@ describe("listEvents", () => {
             { createdAt: cursor.createdAt, id: { gt: cursor.id } },
           ],
         },
+      }),
+    );
+  });
+
+  it("combines type, project and issue filters with the cursor (#602)", async () => {
+    db.agentEvent.findMany.mockResolvedValue([]);
+    await listEvents({ tenantId: "tenant-a" }, { txid: BigInt("120"), id: "evt-x" }, {
+      types: ["comment.created"], typePrefixes: ["claim."], projectId: "proj-1", bugId: "bug-1",
+    });
+    expect(db.agentEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          tenantId: "tenant-a",
+          projectId: "proj-1",
+          bugId: "bug-1",
+          AND: [{ OR: [{ type: { in: ["comment.created"] } }, { type: { startsWith: "claim." } }] }],
+          txid: { lt: BigInt("500") },
+          OR: [{ txid: { gt: BigInt("120") } }, { txid: BigInt("120"), id: { gt: "evt-x" } }],
+        },
+        orderBy: [{ txid: "asc" }, { id: "asc" }],
+      }),
+    );
+  });
+
+  it("uses a single type match without an OR", async () => {
+    db.agentEvent.findMany.mockResolvedValue([]);
+    await listEvents({ tenantId: "tenant-a" }, null, { types: ["issue.created", "issue.updated"] });
+    expect(db.agentEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: "tenant-a", AND: [{ type: { in: ["issue.created", "issue.updated"] } }], txid: { lt: BigInt("500") } },
       }),
     );
   });

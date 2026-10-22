@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeSearchQuery, toSingleQueryParam } from "./search";
+import { MAX_SEARCH_LENGTH, boundSearchTerm, escapeSearchQuery, toSingleQueryParam } from "./search";
 
 describe("escapeSearchQuery", () => {
   it("leaves standard alphanumeric text untouched", () => {
@@ -60,3 +60,29 @@ describe("toSingleQueryParam", () => {
   });
 });
 
+
+describe("boundSearchTerm (#660)", () => {
+  it("trims and cuts an oversized term before it becomes an ILIKE pattern", () => {
+    expect(boundSearchTerm("  login  ")).toBe("login");
+    expect(boundSearchTerm("a".repeat(MAX_SEARCH_LENGTH + 500))).toHaveLength(MAX_SEARCH_LENGTH);
+  });
+
+  it("cuts before escaping, so an escape pair is never split", () => {
+    const term = escapeSearchQuery(boundSearchTerm("%".repeat(MAX_SEARCH_LENGTH + 10)));
+    expect(term).toBe("\\%".repeat(MAX_SEARCH_LENGTH));
+  });
+});
+
+describe("SQL injection payloads stay literal text (#660)", () => {
+  const payloads = [
+    "'; DROP TABLE \"Bug\"; --",
+    "\" OR \"1\"=\"1",
+    "1; SELECT pg_sleep(10)",
+    "' UNION SELECT \"passwordHash\" FROM \"User\" --",
+  ];
+
+  it.each(payloads)("escaping changes nothing but LIKE metacharacters in %s", (payload) => {
+    // Quotes and semicolons are not special to a bound LIKE pattern, so they pass through untouched.
+    expect(escapeSearchQuery(payload)).toBe(payload.replace(/[\\%_]/g, "\\$&"));
+  });
+});

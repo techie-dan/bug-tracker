@@ -37,8 +37,8 @@ const activeTenantMock = vi.mocked(readActiveTenantCookie) as unknown as ReturnT
 const setTenantMock = vi.mocked(setActiveTenantCookie) as unknown as ReturnType<typeof vi.fn>;
 const setProjectMock = vi.mocked(setActiveProjectCookie) as unknown as ReturnType<typeof vi.fn>;
 
-function makeRequest(id: string) {
-  return GET(new NextRequest(`http://localhost:3000/notifications/${id}`), {
+function makeRequest(id: string, origin = "http://localhost:3000") {
+  return GET(new NextRequest(`${origin}/notifications/${id}`), {
     params: Promise.resolve({ id }),
   });
 }
@@ -55,7 +55,7 @@ describe("GET /notifications/[id]", () => {
     sessionUser.mockResolvedValue({ error: "Unauthorized" });
     const res = await makeRequest("notif-1");
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("http://localhost:3000/login");
+    expect(res.headers.get("location")).toBe("/login");
     expect(findUnique).not.toHaveBeenCalled();
   });
 
@@ -63,7 +63,7 @@ describe("GET /notifications/[id]", () => {
     findUnique.mockResolvedValue(null);
     const res = await makeRequest("missing-notif");
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("http://localhost:3000/notifications");
+    expect(res.headers.get("location")).toBe("/notifications");
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -75,7 +75,7 @@ describe("GET /notifications/[id]", () => {
     });
     const res = await makeRequest("notif-other");
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("http://localhost:3000/notifications");
+    expect(res.headers.get("location")).toBe("/notifications");
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -87,7 +87,7 @@ describe("GET /notifications/[id]", () => {
     });
     const res = await makeRequest("notif-1");
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("http://localhost:3000/issues/bug-42#comment-9");
+    expect(res.headers.get("location")).toBe("/issues/bug-42#comment-9");
     expect(update).toHaveBeenCalledWith({
       where: { id: "notif-1" },
       data: { readAt: expect.any(Date) },
@@ -104,7 +104,7 @@ describe("GET /notifications/[id]", () => {
     });
     activeTenantMock.mockResolvedValue("tenant-1");
     const res = await makeRequest("notif-tenant-2");
-    expect(res.headers.get("location")).toBe("http://localhost:3000/issues/bug-42");
+    expect(res.headers.get("location")).toBe("/issues/bug-42");
     expect(memberTenantMock).toHaveBeenCalledWith(expect.anything(), "u1", "tenant-2");
     expect(setTenantMock).toHaveBeenCalledWith("tenant-2");
     expect(setProjectMock).toHaveBeenCalledWith("");
@@ -114,8 +114,21 @@ describe("GET /notifications/[id]", () => {
     findUnique.mockResolvedValue({ userId: "u1", tenantId: "tenant-2", url: "/issues/bug-42", readAt: null });
     memberTenantMock.mockResolvedValue(null);
     const res = await makeRequest("notif-left-tenant");
-    expect(res.headers.get("location")).toBe("http://localhost:3000/notifications");
+    expect(res.headers.get("location")).toBe("/notifications");
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("never sends the browser to the container's bind address behind the proxy (#416)", async () => {
+    findUnique.mockResolvedValue({ userId: "u1", url: "/issues/bug-42", readAt: null });
+    const res = await makeRequest("notif-1", "https://0.0.0.0:3000");
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/issues/bug-42");
+  });
+
+  it("keeps a stored off-site URL on the site", async () => {
+    findUnique.mockResolvedValue({ userId: "u1", url: "//evil.example/phish", readAt: null });
+    const res = await makeRequest("notif-1");
+    expect(res.headers.get("location")).toBe("/issues");
   });
 
   it("does not re-update if notification was already read", async () => {
@@ -126,7 +139,7 @@ describe("GET /notifications/[id]", () => {
     });
     const res = await makeRequest("notif-1");
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("http://localhost:3000/issues/bug-42");
+    expect(res.headers.get("location")).toBe("/issues/bug-42");
     expect(update).not.toHaveBeenCalled();
     expect(expireTagMock).not.toHaveBeenCalled();
   });

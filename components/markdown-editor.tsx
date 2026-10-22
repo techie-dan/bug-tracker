@@ -34,6 +34,7 @@ import {
   StrikethroughIcon,
   TaskListIcon,
 } from "@/components/editor-icons";
+import { AgentMentionBadge } from "@/components/comment-body";
 import {
   useMentionSuggestions,
   type MentionUser,
@@ -46,6 +47,7 @@ import {
   type FormatAction,
 } from "@/lib/markdown-toolbar";
 import { applyTextChange } from "@/lib/editor-dom";
+import { MAX_ATTACHMENT_BYTES, formatBytes } from "@/lib/attachments";
 import {
   filesFrom,
   isFileDrag,
@@ -167,7 +169,7 @@ function ToolbarButton({
       // fire click, not mousedown) works too.
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
-      className="rounded p-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40 sm:p-1.5"
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40 sm:h-7 sm:w-7 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 sm:[@media(pointer:fine)]:h-7 sm:[@media(pointer:fine)]:w-7"
     >
       <span className="flex h-4 w-4 shrink-0 items-center justify-center">
         {icon}
@@ -243,6 +245,36 @@ export const MarkdownEditor = forwardRef<
   }, [uploading]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 2);
+    setCanScrollRight(scrollWidth - clientWidth - scrollLeft > 2);
+  }, []);
+
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    checkScroll();
+    const handleResize = () => checkScroll();
+    window.addEventListener("resize", handleResize);
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => checkScroll());
+      ro.observe(el);
+      return () => {
+        window.removeEventListener("resize", handleResize);
+        ro.disconnect();
+      };
+    }
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [checkScroll, users]);
   // `false` on the server so the first client render matches the server HTML.
   const isApple = useSyncExternalStore(
     subscribeToNothing,
@@ -373,7 +405,20 @@ export const MarkdownEditor = forwardRef<
   const uploadFiles = (files: File[], pasted: boolean) => {
     if (files.length === 0 || disabled) return;
     setUploadError(null);
-    const jobs = files.map((file) => ({
+    const tooLarge = files.filter((file) => file.size > MAX_ATTACHMENT_BYTES);
+    if (tooLarge.length) {
+      setUploadError(
+        tooLarge
+          .map(
+            (file) =>
+              `${file.name}: ${formatBytes(file.size)} is over the ${formatBytes(MAX_ATTACHMENT_BYTES)} limit`,
+          )
+          .join(" "),
+      );
+    }
+    const valid = files.filter((file) => file.size <= MAX_ATTACHMENT_BYTES);
+    if (valid.length === 0) return;
+    const jobs = valid.map((file) => ({
       file,
       name: pasted ? nameForPasted(file) : file.name,
       token: Math.random().toString(36).slice(2, 10),
@@ -506,11 +551,11 @@ export const MarkdownEditor = forwardRef<
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className="flex flex-wrap items-center gap-1 overflow-hidden rounded-t-lg border-b border-slate-200 bg-slate-50 px-1.5 py-1">
+        <div className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-lg border-b border-slate-200 bg-slate-50 px-1.5 py-1 sm:flex-wrap">
           <div
-            className="flex items-center gap-1 border-r border-slate-200 pr-1.5"
-            role="tablist"
-            aria-label="Editor mode"
+            className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-1.5"
+            role="group"
+            aria-label="Editor view"
           >
             <TabButton
               active={writing}
@@ -530,31 +575,50 @@ export const MarkdownEditor = forwardRef<
             </TabButton>
           </div>
 
-          <div
-            className="flex flex-wrap items-center gap-0.5"
-            role="toolbar"
-            aria-label="Formatting"
-          >
-            {WRITE_TOOLS.map((tool) => (
-              <ToolbarButton
-                key={tool.label}
-                label={tool.label}
-                shortcut={shortcutLabelFor(tool.action, isApple)}
-                disabled={disabled}
-                icon={tool.icon}
-                onClick={() => applyAction(tool.action as FormatAction)}
+          <div className="relative min-w-0 flex-1 sm:flex-initial">
+            <div
+              ref={toolbarRef}
+              onScroll={checkScroll}
+              onFocus={checkScroll}
+              className="flex flex-nowrap items-center gap-1 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden sm:flex-wrap sm:gap-0.5 sm:overflow-visible"
+              role="toolbar"
+              aria-label="Formatting"
+            >
+              {WRITE_TOOLS.map((tool) => (
+                <ToolbarButton
+                  key={tool.label}
+                  label={tool.label}
+                  shortcut={shortcutLabelFor(tool.action, isApple)}
+                  disabled={disabled}
+                  icon={tool.icon}
+                  onClick={() => applyAction(tool.action as FormatAction)}
+                />
+              ))}
+              {/* Mention: @ inside a speech bubble. */}
+              {users?.length ? (
+                <ToolbarButton
+                  label="Mention"
+                  shortcut={`${isApple ? "⌘" : "Ctrl+"}Space`}
+                  disabled={disabled}
+                  icon={<MentionIcon />}
+                  onClick={() => insertAtCaret("@")}
+                />
+              ) : null}
+            </div>
+            {canScrollLeft && (
+              <div
+                aria-hidden="true"
+                data-testid="fade-cue-left"
+                className="pointer-events-none absolute inset-y-0 left-0 w-4 bg-gradient-to-r from-slate-50 to-transparent sm:hidden"
               />
-            ))}
-            {/* Mention: @ inside a speech bubble. */}
-            {users?.length ? (
-              <ToolbarButton
-                label="Mention"
-                shortcut={`${isApple ? "⌘" : "Ctrl+"}Space`}
-                disabled={disabled}
-                icon={<MentionIcon />}
-                onClick={() => insertAtCaret("@")}
+            )}
+            {canScrollRight && (
+              <div
+                aria-hidden="true"
+                data-testid="fade-cue-right"
+                className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-slate-50 to-transparent sm:hidden"
               />
-            ) : null}
+            )}
           </div>
         </div>
 
@@ -716,14 +780,12 @@ function TabButton({
   return (
     <button
       type="button"
-      role="tab"
-      aria-selected={active}
+      aria-pressed={active}
       aria-disabled={disabled || undefined}
       title={title}
       disabled={disabled}
-      onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
+      className={`inline-flex shrink-0 items-center gap-1 rounded px-2.5 py-1.5 sm:px-2 sm:py-1 text-xs font-medium transition ${
         active
           ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-300"
           : "text-slate-600 hover:text-slate-900"
@@ -773,7 +835,15 @@ function MentionList({
               }}
               onMouseEnter={() => onHover(index)}
             >
-              {user.name}
+              {user.agentOwner ? (
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate">{user.name}</span>
+                  <AgentMentionBadge />
+                  <span className="truncate text-slate-500">· {user.agentOwner}</span>
+                </span>
+              ) : (
+                user.name
+              )}
             </button>
           </li>
         );

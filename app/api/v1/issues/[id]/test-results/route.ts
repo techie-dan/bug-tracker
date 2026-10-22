@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { agentErrorResponse, requireAgent } from "@/lib/agents/require-agent";
 import { agentBudgetExceededResponse, consumeAgentBudget } from "@/lib/agents/rate-budget";
+import { withAgentBudgetHeaders } from "@/lib/agents/rate-budget-headers";
 import { submitTestVerdict } from "@/lib/agent-api/test-verdict";
 
 /**
@@ -22,22 +23,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return agentErrorResponse(error);
   }
 
-  const budget = await consumeAgentBudget({ id: agent.agentId, burst: agent.burst }, "write");
-  if (!budget.allowed) return agentBudgetExceededResponse(budget.retryAfterSeconds);
+  const budget = await consumeAgentBudget(
+    { id: agent.agentId, burst: agent.burst, burstUntil: agent.burstUntil ?? null },
+    "write",
+  );
+  if (!budget.allowed) return agentBudgetExceededResponse(budget.retryAfterSeconds, budget);
 
   const { id } = await params;
   const body: unknown = await req.json().catch(() => null);
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return NextResponse.json({ error: "invalid_request", message: "Send a JSON object." }, { status: 400 });
+    return withAgentBudgetHeaders(
+      NextResponse.json({ error: "invalid_request", message: "Send a JSON object." }, { status: 400 }),
+      budget,
+    );
   }
 
   const result = await submitTestVerdict(agent, id, body);
   if (result.status === 201) {
-    return NextResponse.json({ verdict: result.verdict }, { status: 201 });
+    return withAgentBudgetHeaders(NextResponse.json({ verdict: result.verdict }, { status: 201 }), budget);
   }
   if (result.status === 200) {
-    return NextResponse.json({ verdict: result.verdict, changed: true }, { status: 200 });
+    return withAgentBudgetHeaders(NextResponse.json({ verdict: result.verdict, changed: true }, { status: 200 }), budget);
   }
   const { status, ...error } = result;
-  return NextResponse.json(error, { status });
+  return withAgentBudgetHeaders(NextResponse.json(error, { status }), budget);
 }

@@ -50,6 +50,6 @@ export default defineConfig({
         url: `${baseURL}/login`,
         timeout: 120_000,
         reuseExistingServer: !process.env.CI,
-        env: { PORT: String(PORT), AUTH_PASSWORD_LOGIN: "true" },
+        env: { PORT: String(PORT), AUTH_PASSWORD_LOGIN: "true", SITE_URL_ALLOW_LOOPBACK: "true" },
       },
 });

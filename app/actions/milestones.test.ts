@@ -1,24 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tx = vi.hoisted(() => ({
-  milestone: { findUniqueOrThrow: vi.fn(), delete: vi.fn() },
+  milestone: { findFirst: vi.fn(), delete: vi.fn() },
   bugActivity: { createMany: vi.fn() },
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth-helpers", () => ({
+  requireUser: vi.fn().mockResolvedValue({ id: "admin-1", role: "admin" }),
   requireAdmin: vi.fn().mockResolvedValue({ id: "admin-1", role: "admin" }),
 }));
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/tenant-context", () => ({
+  currentTenantIdFor: vi.fn().mockResolvedValue("tenant-ziki"),
+}));
+vi.mock("@/lib/prisma", () => {
+  const db = {
     milestone: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    tenant: {
+      findUnique: vi.fn().mockResolvedValue({ id: "tenant-ziki", name: "Ziki" }),
+    },
+    membership: {
+      findUnique: vi.fn().mockResolvedValue({ role: "member" }),
+    },
     bug: { count: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn() },
     $transaction: vi.fn(async (run) => run(tx)),
-  },
-}));
+  };
+  return { prisma: db };
+});
 
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth-helpers";
+import { requireUser } from "@/lib/auth-helpers";
 import { revalidatePath } from "next/cache";
 import {
   createMilestoneAction,
@@ -40,7 +51,7 @@ describe("milestone actions (#289)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     m.findFirst.mockResolvedValue(null);
-    tx.milestone.findUniqueOrThrow.mockResolvedValue({
+    tx.milestone.findFirst.mockResolvedValue({
       title: "v2.4", bugs: [{ id: "b1" }, { id: "b2" }],
     });
     tx.bugActivity.createMany.mockResolvedValue({ count: 2 });
@@ -48,7 +59,7 @@ describe("milestone actions (#289)", () => {
   });
 
   it("requires an admin", async () => {
-    vi.mocked(requireAdmin).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
+    vi.mocked(requireUser).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
     await expect(createMilestoneAction(fd({ title: "v2" }))).rejects.toThrow();
     expect(m.create).not.toHaveBeenCalled();
   });
@@ -56,7 +67,7 @@ describe("milestone actions (#289)", () => {
   it("creates with a calendar due date", async () => {
     expect(await createMilestoneAction(fd({ title: " v2.4 ", dueDate: "2026-10-31", description: "" }))).toEqual({ ok: true });
     expect(m.create).toHaveBeenCalledWith({
-      data: { title: "v2.4", description: null, dueDate: new Date("2026-10-31T00:00:00.000Z") },
+      data: { tenantId: "tenant-ziki", title: "v2.4", description: null, dueDate: new Date("2026-10-31T00:00:00.000Z") },
     });
   });
 
@@ -71,11 +82,16 @@ describe("milestone actions (#289)", () => {
   });
 
   it("clears the due date when emptied", async () => {
+    m.findFirst.mockImplementation(async ({ where }) => {
+      if (where.id) return { id: "m1", title: "v2.4" };
+      return null;
+    });
     await updateMilestoneAction("m1", fd({ title: "v2.4", dueDate: "" }));
     expect(m.update.mock.calls[0][0].data.dueDate).toBeNull();
   });
 
   it("closing touches only the milestone", async () => {
+    m.findFirst.mockResolvedValue({ id: "m1", title: "v2.4" });
     expect(await setMilestoneClosedAction("m1", true)).toEqual({ ok: true });
     expect(m.update).toHaveBeenCalledWith({ where: { id: "m1" }, data: { isClosed: true, closedAt: expect.any(Date) } });
     expect(bug.updateMany).not.toHaveBeenCalled();
@@ -95,7 +111,7 @@ describe("milestone actions (#289)", () => {
   });
 
   it("deletes an empty milestone without creating empty activities", async () => {
-    tx.milestone.findUniqueOrThrow.mockResolvedValue({ title: "Empty", bugs: [] });
+    tx.milestone.findFirst.mockResolvedValue({ title: "Empty", bugs: [] });
     expect(await deleteMilestoneAction("m1")).toEqual({ ok: true, cleared: 0 });
     expect(tx.bugActivity.createMany).not.toHaveBeenCalled();
     expect(tx.milestone.delete).toHaveBeenCalled();
@@ -109,13 +125,13 @@ describe("milestone actions (#289)", () => {
   });
 
   it("requires an admin before starting deletion", async () => {
-    vi.mocked(requireAdmin).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
+    vi.mocked(requireUser).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
     await expect(deleteMilestoneAction("m1")).rejects.toThrow("NEXT_REDIRECT");
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it("says so when the milestone is already gone", async () => {
-    tx.milestone.findUniqueOrThrow.mockRejectedValueOnce(Object.assign(new Error("gone"), { code: "P2025" }));
+    tx.milestone.findFirst.mockResolvedValue(null);
     expect((await deleteMilestoneAction("m1")).error).toMatch(/no longer exists/);
     expect(tx.bugActivity.createMany).not.toHaveBeenCalled();
   });

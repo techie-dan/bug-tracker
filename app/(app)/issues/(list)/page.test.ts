@@ -55,6 +55,38 @@ describe("issue list fails closed (#506)", () => {
     expect(findMany).not.toHaveBeenCalled();
   });
 
+  it("shows a reference, not the database error, when the count fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dbError = new Error('duplicate key value violates unique constraint "Bug_secret_idx"');
+    count.mockRejectedValue(dbError);
+
+    const html = renderToStaticMarkup((await BugsPage({ searchParams: Promise.resolve({}) })) as ReactElement);
+
+    expect(html).toContain("Issues could not be loaded");
+    expect(html).not.toContain("Bug_secret_idx");
+    expect(html).not.toContain("database error");
+    const reference = html.match(/<code[^>]*>([0-9a-f]{8})<\/code>/)?.[1];
+    expect(reference).toBeDefined();
+    expect(consoleError).toHaveBeenCalledWith(`[bugs] list count failed (ref ${reference})`, dbError);
+    consoleError.mockRestore();
+  });
+
+  it("shows a reference, not the database error, when the list query fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dbError = new Error('column "secret_col" of relation "Bug" does not exist');
+    count.mockResolvedValue(3);
+    findMany.mockRejectedValue(dbError);
+
+    const html = renderToStaticMarkup((await BugsPage({ searchParams: Promise.resolve({}) })) as ReactElement);
+
+    expect(html).toContain("Issues could not be loaded");
+    expect(html).not.toContain("secret_col");
+    const reference = html.match(/<code[^>]*>([0-9a-f]{8})<\/code>/)?.[1];
+    expect(reference).toBeDefined();
+    expect(consoleError).toHaveBeenCalledWith(`[bugs] list query failed (ref ${reference})`, dbError);
+    consoleError.mockRestore();
+  });
+
   it("still gives someone with no membership an empty board, never other tenants' issues", async () => {
     currentTenantIdFor.mockResolvedValue(null);
     count.mockRejectedValueOnce(missingTenantColumn()).mockResolvedValue(0);
@@ -90,9 +122,16 @@ describe("issue list fails closed (#506)", () => {
     // Verbose person attribution removed
     expect(pageSource).not.toContain("<span>Reported by</span>");
     expect(pageSource).not.toContain("<span>Assigned to</span>");
+  });
 
-    // IssuesSidebar and IssuesSidebarDisclosure removed
-    expect(pageSource).not.toContain("<IssuesSidebar");
-    expect(pageSource).not.toContain("<IssuesSidebarDisclosure");
+  it("builds the Previous/Next links from the shared filter helper, so area is not dropped (#967)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const pageSource = fs.readFileSync(path.resolve(__dirname, "page.tsx"), "utf8");
+
+    expect(pageSource).toContain("queryParams={issueListPaginationParams({");
+    expect(pageSource).toMatch(/area: selectedArea,/);
+    // No hand-written parameter list to fall out of step with the filters again.
+    expect(pageSource).not.toContain("queryParams={{");
   });
 });

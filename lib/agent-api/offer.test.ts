@@ -8,6 +8,17 @@ describe("ticket offers", () => {
     expect(isOfferExpired(offeredAt, start + OFFER_TTL_MS - 1)).toBe(false);
     expect(isOfferExpired(offeredAt, start + OFFER_TTL_MS)).toBe(true);
     expect(isOfferExpired(null, start)).toBe(true);
+    expect(isOfferExpired(offeredAt, start + 119_999, 120_000)).toBe(false);
+    expect(isOfferExpired(offeredAt, start + 120_000, 120_000)).toBe(true);
+  });
+
+  it("honours the project's active-claim cap", () => {
+    const candidates = [
+      { beneficiaryUserId: "busy", agentId: "a", activeClaims: 1, lastOfferedAt: null },
+      { beneficiaryUserId: "free", agentId: "b", activeClaims: 0, lastOfferedAt: null },
+    ];
+    expect(availableOfferCandidates(candidates, 1).map((person) => person.beneficiaryUserId)).toEqual(["free"]);
+    expect(availableOfferCandidates(candidates, 2).map((person) => person.beneficiaryUserId)).toEqual(["free", "busy"]);
   });
 
   it("selects the fewest active claims, then the person least recently offered", () => {
@@ -20,6 +31,14 @@ describe("ticket offers", () => {
       { beneficiaryUserId: "old", agentId: "d", activeClaims: 0, lastOfferedAt: old },
     ];
     expect(availableOfferCandidates(candidates).map((person) => person.beneficiaryUserId)).toEqual(["never", "old", "recent", "busy"]);
+  });
+
+  it("prefers an agent whose configured area matches before workload tie-breaks", () => {
+    const candidates = [
+      { beneficiaryUserId: "matching", agentId: "a", activeClaims: 0, lastOfferedAt: new Date("2026-10-19T11:30:00Z"), areaMatch: true },
+      { beneficiaryUserId: "available", agentId: "b", activeClaims: 0, lastOfferedAt: null, areaMatch: false },
+    ];
+    expect(availableOfferCandidates(candidates).map((person) => person.beneficiaryUserId)).toEqual(["matching", "available"]);
   });
 
   it("skips people at the active claim cap or with another pending offer", () => {
@@ -70,9 +89,10 @@ describe("ticket offers", () => {
     const { prisma } = await import("@/lib/prisma");
     const { sweepExpiredOffers } = await import("@/lib/agent-api/offer");
 
+    vi.spyOn(prisma.projectWorkflow, "findUnique").mockResolvedValue(null);
     const findManySpy = vi.spyOn(prisma.issueClaim, "findMany").mockResolvedValueOnce([
-      { id: "claim-1" } as never,
-      { id: "claim-2" } as never,
+      { id: "claim-1", offeredAt: new Date(Date.now() - 100_000), bug: { projectId: "proj-1" } } as never,
+      { id: "claim-2", offeredAt: new Date(Date.now() - 100_000), bug: { projectId: "proj-1" } } as never,
     ]);
     const txMock = {
       issueClaim: {
