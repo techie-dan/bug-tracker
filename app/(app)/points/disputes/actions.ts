@@ -93,6 +93,9 @@ export async function resolveDisputeAction(
   if (!(await canManagePoints(user, dispute.tenantId))) {
     return { ok: false, error: "Only a workspace admin can resolve disputes." };
   }
+  if (dispute.userId === user.id) {
+    return { ok: false, error: "You cannot resolve your own points dispute." };
+  }
 
   const noteValue = formData.get("note");
   const note = typeof noteValue === "string" ? noteValue : null;
@@ -137,7 +140,7 @@ export async function resolveDisputeAction(
     if (!dispute.pointEntryId) return { ok: false, error: NO_ENTRY_ON_THIS_DISPUTE };
     const entry = await prisma.pointEntry.findUnique({
       where: { id: dispute.pointEntryId },
-      select: { id: true, tenantId: true, userId: true, bugId: true, role: true, points: true },
+      select: { id: true, tenantId: true, userId: true, bugId: true, role: true, points: true, correctedAt: true },
     });
     if (!entry || entry.tenantId !== dispute.tenantId) {
       return { ok: false, error: NOT_IN_WORKSPACE };

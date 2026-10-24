@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { escapeSearchQuery } from "@/lib/search";
+import { boundSearchTerm, escapeSearchQuery } from "@/lib/search";
 
 /**
  * Builds Prisma `where` filter for searching users by name or email.
@@ -9,7 +9,7 @@ export function buildUserSearchWhere(
   query?: string | string[] | null,
 ): Prisma.UserWhereInput {
   const raw = Array.isArray(query) ? (query.length > 0 ? query[0] : undefined) : query;
-  const trimmed = raw?.trim();
+  const trimmed = raw == null ? undefined : boundSearchTerm(raw);
   if (!trimmed) {
     return {};
   }

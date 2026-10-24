@@ -49,6 +49,29 @@ describe("agent and platform notifications (#443)", () => {
     ).toMatchObject({ tenantId: "workspace-1" });
   });
 
+  it("reminds the owner of a question their agent's claim is paused on (#606)", () => {
+    const [planned] = planNotifications(
+      agentQuestionEvent({
+        id: "q1",
+        body: "Which API?",
+        tenantId: "workspace-1",
+        ownerUserId: "owner",
+        agent: { name: "Claude" },
+        bugId: "b1",
+        bugTitle: "Header overlaps",
+        reminder: true,
+      }),
+      SITE,
+    );
+    expect(planned).toMatchObject({
+      userId: "owner",
+      kind: "agent_question",
+      url: "/questions/q1",
+      title: "Reminder: Claude is still waiting for your answer about “Header overlaps”",
+    });
+    expect(planned?.text).toContain("paused until you answer");
+  });
+
   it("asks the person a redesign was proposed for to approve it", () => {
     const planned = planNotifications(
       approvalNeededEvent({

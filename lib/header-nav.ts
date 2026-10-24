@@ -5,6 +5,7 @@ export type HeaderNavSubItem = {
   href: string;
   label: string;
   description?: string;
+  badge?: number;
 };
 
 export type HeaderNavItem = {
@@ -15,7 +16,7 @@ export type HeaderNavItem = {
 };
 
 /** #444: pick another tenant, create one, or accept an invite. */
-export const SWITCH_TENANT_LINK: HeaderNavItem = { href: "/tenants", label: "Switch tenant" };
+export const SWITCH_TENANT_LINK: HeaderNavItem = { href: "/tenants", label: "Switch workspace" };
 
 /** Links shown in the header for the role the user is currently viewing as (#761). */
 export function headerNavItems(
@@ -23,15 +24,23 @@ export function headerNavItems(
   options?: { agentPlatform?: boolean; managePlatforms?: boolean; pendingEscalations?: number },
 ): HeaderNavItem[] {
   const manageProjectChildren: HeaderNavSubItem[] = [
-    { href: "/projects", label: "Projects", description: "View, switch, and create workspace projects" },
-    { href: "/milestones", label: "Milestones", description: "Track release goals and milestones" },
+    {
+      href: "/projects",
+      label: "Projects",
+      description: "A product in this workspace, such as a web app. The switcher picks the active one.",
+    },
+    {
+      href: "/milestones",
+      label: "Milestones",
+      description: "A release for this workspace. It can include issues from more than one project.",
+    },
   ];
 
   if (options?.managePlatforms || isAdmin(role)) {
     manageProjectChildren.push({
       href: "/admin/categories",
       label: "Platforms",
-      description: "Manage target platforms (Web, Mobile, Desktop, Backend)",
+      description: "A label on an issue, such as Web or Mobile. Not a product, and shared by every project here.",
     });
   }
 
@@ -39,30 +48,43 @@ export function headerNavItems(
     manageProjectChildren.push({
       href: "/admin/types",
       label: "Types",
-      description: "Manage issue classifications",
+      description: "How an issue is classified, such as bug or task.",
     });
   }
 
+  const pending =
+    typeof options?.pendingEscalations === "number" && options.pendingEscalations > 0
+      ? options.pendingEscalations
+      : undefined;
+
   const items: HeaderNavItem[] = [
     { href: "/issues", label: "Issues" },
+    { href: "/team", label: "Team" },
     {
       href: "/projects",
-      label: "Manage Project",
+      label: "Workspace",
       children: manageProjectChildren,
     },
   ];
 
   if (options?.agentPlatform ?? isAgentPlatformEnabled()) {
-    items.push(
-      {
-        href: "/escalations",
-        label: "Escalations",
-        ...(typeof options?.pendingEscalations === "number" && options.pendingEscalations > 0
-          ? { badge: options.pendingEscalations }
-          : {}),
-      },
-      { href: "/redesigns", label: "Redesigns" },
-    );
+    items.push({
+      href: "/escalations",
+      label: "Agents",
+      ...(pending ? { badge: pending } : {}),
+      children: [
+        {
+          href: "/escalations",
+          label: "Escalations",
+          description: "Questions an agent is waiting on",
+          ...(pending ? { badge: pending } : {}),
+        },
+        { href: "/redesigns", label: "Redesigns", description: "Proposed changes to review" },
+        { href: "/docs", label: "API Docs", description: "Agent API and /llms.txt" },
+      ],
+    });
+  } else {
+    items.push({ href: "/docs", label: "API Docs" });
   }
 
   if (isSuperAdmin(role)) {

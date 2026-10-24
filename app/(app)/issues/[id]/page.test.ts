@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
 
 // #425: run as a member of the Zedu tenant.
 vi.mock("@/lib/tenant-context", async (importOriginal) => ({
@@ -47,7 +49,8 @@ vi.mock("@/lib/roles", () => ({
   isSuperAdmin: vi.fn((role) => role === "super_admin"),
 }));
 
-vi.mock("@/lib/ticket-deletion", () => ({
+vi.mock("@/lib/ticket-deletion", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ticket-deletion")>()),
   canDeleteTicket: vi.fn().mockReturnValue(false),
 }));
 
@@ -107,10 +110,10 @@ vi.mock("@/lib/prisma", () => ({
       findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn().mockResolvedValue(null),
     },
-    issueWatch: { findUnique: vi.fn().mockResolvedValue(null) },
     attachment: { findMany: vi.fn().mockResolvedValue([]) },
     bugRevision: { findFirst: vi.fn().mockResolvedValue(null) },
     milestone: { findMany: vi.fn().mockResolvedValue([]) },
+    goal: { findMany: vi.fn().mockResolvedValue([]) },
     issueValidation: { findMany: vi.fn().mockResolvedValue([]) },
     issueClaim: { findMany: vi.fn().mockResolvedValue([]) },
     testVerdict: { findMany: vi.fn().mockResolvedValue([]) },
@@ -141,7 +144,7 @@ describe("BugDetailPage conditional user query (#349)", () => {
     );
     // Find the header action bar container
     const headerActionBlockMatch = pageSourceFresh.match(
-      /<div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:pt-6 print:hidden">([\s\S]*?)<\/div>/,
+      /<div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:pt-9 print:hidden">([\s\S]*?)<\/div>/,
     );
     expect(headerActionBlockMatch).toBeTruthy();
     const headerActionBlock = headerActionBlockMatch![1];
@@ -154,6 +157,16 @@ describe("BugDetailPage conditional user query (#349)", () => {
     // Danger zone still retains DeleteIssueButton
     expect(pageSourceFresh).toContain("Danger zone");
     expect(pageSourceFresh).toMatch(/Danger zone[\s\S]*?<DeleteIssueButton/);
+  });
+
+  it("does not render a Watch button or read the viewer's watch row (#417)", () => {
+    const pageSourceFresh = readFileSync(
+      path.resolve(__dirname, "page.tsx"),
+      "utf8",
+    );
+    expect(pageSourceFresh).not.toContain("WatchButton");
+    expect(pageSourceFresh).not.toContain("issueWatch");
+    expect(pageSourceFresh).not.toContain("isWatchingIssue");
   });
 
   it("renders Conversation section heading and supports conversation anchor (#753)", () => {
@@ -173,6 +186,7 @@ describe("BugDetailPage conditional user query (#349)", () => {
       mockBugFindUnique.mockResolvedValue({
         id: "bug-1",
         number: 42,
+        tenantId: "tenant-zedu",
         title: "Test Bug",
         description: "Test Description",
         status: "open",
@@ -243,7 +257,9 @@ describe("BugDetailPage conditional user query (#349)", () => {
       });
 
       expect(mockUserFindMany).toHaveBeenCalledTimes(1);
+      // #502: only the issue's tenant can be mentioned or assigned.
       expect(mockUserFindMany).toHaveBeenCalledWith({
+        where: { memberships: { some: { tenantId: "tenant-zedu" } } },
         orderBy: { name: "asc" },
         select: { id: true, name: true, role: true, image: true },
       });
@@ -263,7 +279,9 @@ describe("BugDetailPage conditional user query (#349)", () => {
       });
 
       expect(mockUserFindMany).toHaveBeenCalledTimes(1);
+      // #502: only the issue's tenant can be mentioned or assigned.
       expect(mockUserFindMany).toHaveBeenCalledWith({
+        where: { memberships: { some: { tenantId: "tenant-zedu" } } },
         orderBy: { name: "asc" },
         select: { id: true, name: true, role: true, image: true },
       });
@@ -336,6 +354,28 @@ describe("BugDetailPage conditional user query (#349)", () => {
           }),
         }),
       );
+    });
+
+    it("shows a reference instead of the database error when the issue can't load", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockRequireUser.mockResolvedValue({
+        id: "user-123",
+        role: "user",
+      } as unknown as Awaited<ReturnType<typeof requireUser>>);
+      const dbError = new Error('relation "Bug" violates constraint "Bug_tenantId_fkey" on column secret_col');
+      mockBugFindUnique.mockRejectedValueOnce(dbError);
+
+      const element = await BugDetailPage({ params: Promise.resolve({ id: "bug-1" }) });
+      const html = renderToStaticMarkup(element as ReactElement);
+
+      expect(html).toContain("This issue could not be loaded");
+      expect(html).not.toContain("Bug_tenantId_fkey");
+      expect(html).not.toContain("secret_col");
+      // The full error is logged, under the reference the page shows.
+      const reference = html.match(/<code[^>]*>([0-9a-f]{8})<\/code>/)?.[1];
+      expect(reference).toBeDefined();
+      expect(consoleError).toHaveBeenCalledWith(`[issue] detail query failed (ref ${reference})`, dbError);
+      consoleError.mockRestore();
     });
   });
 });

@@ -42,13 +42,14 @@ const FIELD_LABELS: Record<string, string> = {
   typeId: "Type",
   categoryId: "Platform",
   description: "Description",
-  proofLinks: "Proof links",
+  proofLinks: "GitHub PR",
   severity: "Severity",
   assigneeId: "Assignee",
 };
 
 export function CreateIssueForm({
   users,
+  assigneeUsers = users,
   categories = [],
   types = [],
   isAdmin,
@@ -56,6 +57,7 @@ export function CreateIssueForm({
   projectId,
 }: {
   users: UserOption[];
+  assigneeUsers?: UserOption[];
   categories?: CategoryOption[];
   types?: TypeOption[];
   isAdmin: boolean;
@@ -331,14 +333,14 @@ export function CreateIssueForm({
               htmlFor="proofLinks"
               className="text-sm font-medium text-slate-700"
             >
-              Proof links (GitHub)
+              GitHub PR
             </label>
             <Textarea
               id="proofLinks"
               name="proofLinks"
               rows={3}
               placeholder={
-                "https://github.com/organization/repo/issues/123\nhttps://github.com/organization/repo/pull/456"
+                "https://github.com/organization/repo/pull/123"
               }
               value={values.proofLinks}
               onChange={(event) => setValue("proofLinks", event.target.value)}
@@ -346,7 +348,7 @@ export function CreateIssueForm({
             />
             <FieldError formId={errs.formId} field="proofLinks" errors={errs.fieldErrors} />
             <p className="text-xs text-slate-500">
-              Optional. One GitHub link per line (e.g. https://github.com/org/repo/issues/123). You need to have created the issue on GitHub first or gotten it from GitHub before adding the link here.
+              Optional. One GitHub link per line (e.g. https://github.com/organization/repo/pull/123).
             </p>
           </div>
         ) : null}
@@ -402,7 +404,7 @@ export function CreateIssueForm({
             <AssigneeCombobox
               id="assigneeId"
               name="assigneeId"
-              people={users}
+              people={assigneeUsers}
               value={values.assigneeId}
               onChange={(val) => setValue("assigneeId", val)}
             />

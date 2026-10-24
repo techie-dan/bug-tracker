@@ -1,10 +1,12 @@
 import type { MembershipRole } from "@prisma/client";
 import { isOrganizationAdmin } from "@/lib/organization-role";
 import type { AppRole } from "@/lib/roles";
+import type { BugVoterSummary } from "@/lib/voters";
 
 export const TICKET_DELETION_ERRORS = {
   unauthorized: "Only an owner or admin of this organization can delete issues",
-  unauthorizedRestore: "Only an owner or admin of this organization can restore issues",
+  unauthorizedRestore:
+    "Only an owner or admin of this organization can restore issues",
   invalidId: "Invalid issue ID",
   notFound: "Issue not found",
   alreadyDeleted: "Issue is already deleted",
@@ -14,6 +16,51 @@ export const TICKET_DELETION_ERRORS = {
 } as const;
 
 export type TicketDeletionError = keyof typeof TICKET_DELETION_ERRORS;
+
+/** What a delete leaves in place. Deleting only hides an issue (#692). */
+export type TicketDeletionCounts = { comments: number; votes: number };
+
+/**
+ * The counts every delete and restore message quotes. Votes are upvotes only:
+ * downvotes were removed (#1059), and the dislike rows still in the database
+ * no longer count anywhere, so the messages say what the vote button says.
+ */
+export function deletionCounts(visibleComments: number, voters: BugVoterSummary): TicketDeletionCounts {
+  return { comments: visibleComments, votes: voters.likes.count };
+}
+
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/**
+ * The one sentence that says what is kept when an issue is deleted. Without
+ * counts it still says what is kept, just not how much.
+ */
+export function retainedSummary(counts?: TicketDeletionCounts): string {
+  if (!counts) return "Its comments, votes and history are kept.";
+  return `Its ${plural(counts.comments, "comment")}, ${plural(counts.votes, "vote")} and history are kept.`;
+}
+
+/**
+ * What deleting does, before it happens. The confirm dialog and the danger
+ * zone both print this string, so they cannot drift apart.
+ */
+export function deleteSummary(counts?: TicketDeletionCounts): string {
+  return `It will be hidden from regular users. ${retainedSummary(counts)} Owners and admins of this organization can restore it from "View deleted issues".`;
+}
+
+/** The same facts, once the issue has been deleted (the banner on a deleted issue). */
+export function deletedSummary(counts?: TicketDeletionCounts): string {
+  return `It is hidden from regular users. ${retainedSummary(counts)} Owners and admins of this organization can restore it.`;
+}
+
+/** What restoring does. Mirrors {@link deleteSummary}: what was hidden comes back as it was. */
+export function restoreSummary(counts?: TicketDeletionCounts): string {
+  const kept = counts
+    ? `its ${plural(counts.comments, "comment")}, ${plural(counts.votes, "vote")} and history`
+    : "its comments, votes and history";
+  return `It will be visible to everyone who can see this organization's issues again, with ${kept} as they were.`;
+}
 
 /**
  * Soft-delete is an organization power: owner, admin, or the site super admin.

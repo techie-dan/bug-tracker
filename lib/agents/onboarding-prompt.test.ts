@@ -13,7 +13,7 @@ describe("agentOnboardingPrompt", () => {
 
   it("keeps approval with the person and does not treat the project id as the key", () => {
     expect(prompt).toContain("Do not invent an approval");
-    expect(prompt).toContain("project id in the Ziki header is not the API key");
+    expect(prompt).toContain("A project id is not the API key");
     expect(prompt).not.toContain("https://ziki.dev//");
   });
 });

@@ -6,6 +6,7 @@ import {
   RETIRED_PLATFORMS,
   ensureDefaultPlatforms,
 } from "@/lib/categories";
+import { ensureDefaultIssueTypes } from "@/lib/issue-types";
 
 /**
  * Cached reads for data that changes only through an admin action (#297, #317).
@@ -86,9 +87,10 @@ function missingColumn(error: unknown, column: string): boolean {
   ).test(message);
 }
 
-async function readIssueTypes(): Promise<IssueTypeLookup[]> {
+async function readIssueTypes(tenantId: string): Promise<IssueTypeLookup[]> {
   try {
     return await prisma.issueType.findMany({
+      where: { tenantId },
       select: { id: true, name: true, description: true, template: true, isActive: true },
       orderBy: { name: "asc" },
     });
@@ -98,6 +100,7 @@ async function readIssueTypes(): Promise<IssueTypeLookup[]> {
     if (!missingColumn(error, "template")) throw error;
     console.error("[lookups] IssueType.template is missing; reading types without it", error);
     const rows = await prisma.issueType.findMany({
+      where: { tenantId },
       select: { id: true, name: true, description: true, isActive: true },
       orderBy: { name: "asc" },
     });
@@ -117,14 +120,19 @@ const cachedIssueTypes = unstable_cache(readIssueTypes, ["lookup", "issue-types"
   revalidate: LOOKUP_TTL_SECONDS,
 });
 
-/** Every issue type, active or not, by name. */
-export function getIssueTypes(): Promise<IssueTypeLookup[]> {
-  return cachedIssueTypes();
+/** Every issue type in this organization, active or not, by name. */
+export async function getIssueTypes(tenantId?: string | null): Promise<IssueTypeLookup[]> {
+  if (!tenantId) return [];
+  // The tenant id is part of the cache key, so organizations don't share types.
+  const types = await cachedIssueTypes(tenantId);
+  if (types.length > 0) return types;
+  await ensureDefaultIssueTypes(tenantId);
+  return readIssueTypes(tenantId);
 }
 
-/** The issue types a new report can use. */
-export async function getActiveIssueTypesCached(): Promise<IssueTypeLookup[]> {
-  return (await getIssueTypes()).filter((t) => t.isActive);
+/** The issue types a new report can use in this organization. */
+export async function getActiveIssueTypesCached(tenantId?: string | null): Promise<IssueTypeLookup[]> {
+  return (await getIssueTypes(tenantId)).filter((t) => t.isActive);
 }
 
 /**

@@ -6,7 +6,7 @@ import { isPasswordAuthEnabled } from "@/lib/auth-mode";
 import { isGoogleOAuthConfigured } from "@/lib/google-oauth";
 import { safeCallbackUrl } from "@/lib/safe-callback-url";
 
-/* Distinct browser-tab title; the root layout appends "· Ziki Issues". */
+/* Distinct browser-tab title; the root layout appends "· Ziki". */
 export const metadata = { title: "Sign in" };
 
 /**
@@ -31,7 +31,7 @@ export default async function LoginPage({
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4 py-16">
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
         <div className="mb-4">
           <Link
             href="/"
@@ -42,7 +42,7 @@ export default async function LoginPage({
         </div>
         <BrandLockup href="/" size="md" />
         <h1 className="mt-4 text-xl font-semibold text-slate-900">
-          Sign in to Ziki Issues
+          Sign in to Ziki
         </h1>
         <p className="mt-1.5 text-sm text-slate-600">
           Sign in with your Google account to report, vote, and track issues.
@@ -58,12 +58,15 @@ export default async function LoginPage({
           <div
             className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700"
             role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
           >
             <p className="font-medium">
-              {params.error === "OAuthCallbackError" ||
-              params.error === "Configuration"
-                ? "Unable to complete Google sign-in. Please try again."
-                : "Authentication failed. Please try again."}
+              {params.error === "TwoFactor"
+                ? "This account has two-factor sign-in on. Sign in with email and password, then enter the code. Google cannot skip that step."
+                : params.error === "OAuthCallbackError" || params.error === "Configuration"
+                  ? "Unable to complete Google sign-in. Please try again."
+                  : "Authentication failed. Please try again."}
             </p>
             {params.reason ? (
               <p className="mt-1.5 font-mono text-xs text-red-800 break-words">

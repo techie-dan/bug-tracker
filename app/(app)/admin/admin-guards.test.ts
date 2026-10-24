@@ -27,11 +27,22 @@ describe("admin page guards (#121)", () => {
     "%s checks the role server-side",
     (name, page) => {
       const source = readFileSync(page, "utf8");
-      // Platforms belong to the open organization, so the page checks that
-      // membership (and the site admin role) instead of requireAdmin alone.
+      // Platforms, milestones and issue types belong to the open organization,
+      // so the pages check that membership (and the site admin role) instead
+      // of requireAdmin alone.
       if (name === path.join("categories", "page.tsx")) {
         expect(source).toMatch(/requireUser\(\)/);
         expect(source).toMatch(/platformScopeFor\(/);
+        return;
+      }
+      if (name === path.join("milestones", "page.tsx")) {
+        expect(source).toMatch(/requireUser\(\)/);
+        expect(source).toMatch(/milestoneScopeFor\(/);
+        return;
+      }
+      if (name === path.join("types", "page.tsx")) {
+        expect(source).toMatch(/requireUser\(\)/);
+        expect(source).toMatch(/issueTypeScopeFor\(/);
         return;
       }
       expect(source).toMatch(/require(Super)?Admin\(\)/);

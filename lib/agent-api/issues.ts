@@ -6,28 +6,41 @@ import { agentErrorResponse, assertKeyProject, requireAgent, type AgentContext }
 import { requireLevel } from "@/lib/agents/levels";
 import { audit } from "@/lib/agents/audit";
 import { consumeAgentBudget, agentBudgetExceededResponse } from "@/lib/agents/rate-budget";
+import { withAgentBudgetHeaders, type AgentBudgetQuota } from "@/lib/agents/rate-budget-headers";
 import { createBugSchema, commentSchema, statusSchema, severitySchema } from "@/lib/validations/issue";
 import { parsePlatformFilter, platformFilterWhere } from "@/lib/platform-filter";
+import { boundSearchTerm, escapeSearchQuery } from "@/lib/search";
+import { parseProjectAreaFilter, projectAreaFilterWhere } from "@/lib/project-area-filter";
+import { intakeKind, openIssueStages, type IssueStage } from "@/lib/issue-stage";
 import { createIssueWithPolicy, cursorOrderBy, cursorWhere, decodeCursor, hashCreateRequest, pageSize, toPage, type IssueCursor } from "@/lib/agent-api/create-policy";
 import { createdSummary, commentedSummary, commentPreview } from "@/lib/activity-log";
 import { extractMentionedUserIds, normalizeMentions } from "@/lib/mentions";
 import { commentDepth, MAX_COMMENT_DEPTH } from "@/lib/comments";
+import { attachmentIdsInMarkdown, linkAttachments } from "@/lib/attachment-link";
+import { MAX_ATTACHMENTS_PER_ITEM } from "@/lib/attachments";
 import { publish } from "@/lib/agent-api/events";
+import { isConfirmed } from "@/lib/agent-api/validation";
 import { notifyLater } from "@/lib/notify";
 import type { NotificationEvent } from "@/lib/notifications";
 import { logger } from "@/lib/logger";
 
 export class IssueApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public body?: Record<string, unknown>) { super(message); }
 }
 
 const idSchema = z.string().trim().min(1).max(191);
-const createSchema = createBugSchema.pick({ title: true, description: true, categoryId: true, proofLinks: true })
+const stageSchema = z.enum(["reported", "confirmed", "ready"]);
+/** Files uploaded with POST /api/v1/attachments, linked on save (#645). */
+const attachmentIdsSchema = z.array(idSchema).max(MAX_ATTACHMENTS_PER_ITEM).optional();
+export const createSchema = createBugSchema.pick({ title: true, description: true, categoryId: true, areaId: true, proofLinks: true })
   .extend({
-    projectId: idSchema.optional(), beneficiaryUserId: idSchema.optional(),
+    // #494: no beneficiaryUserId — an agent can't file issues in someone
+    // else's name. The reporter is always the agent's owner.
+    projectId: idSchema.optional(),
     typeId: z.unknown().optional(), severity: z.unknown().optional(), acknowledgeSimilar: z.unknown().optional(),
+    attachmentIds: attachmentIdsSchema,
   }).strict();
-const agentCommentSchema = commentSchema.extend({ projectId: idSchema.optional() }).strict();
+const agentCommentSchema = commentSchema.extend({ projectId: idSchema.optional(), attachmentIds: attachmentIdsSchema }).strict();
 
 /** Authenticate before parsing input, charge the shared budget, and audit outcomes including denials. */
 export async function agentIssueRequest(
@@ -37,6 +50,7 @@ export async function agentIssueRequest(
 ): Promise<Response> {
   let agent: AgentContext | undefined;
   let response: Response | undefined;
+  let quota: AgentBudgetQuota | undefined;
   try {
     agent = await requireAgent(request);
     requireLevel(agent, level);
@@ -44,11 +58,15 @@ export async function agentIssueRequest(
       // Retired or non-working routes must not spend the caller's budget (#554).
       response = await run(agent);
     } else {
-      const budget = await consumeAgentBudget({ id: agent.agentId, burst: agent.burst }, level === "observer" ? "read" : "write");
-      response = budget.allowed ? await run(agent) : agentBudgetExceededResponse(budget.retryAfterSeconds);
+      const budget = await consumeAgentBudget(
+        { id: agent.agentId, burst: agent.burst, burstUntil: agent.burstUntil ?? null },
+        level === "observer" ? "read" : "write",
+      );
+      quota = budget;
+      response = budget.allowed ? await run(agent) : agentBudgetExceededResponse(budget.retryAfterSeconds, budget);
     }
   } catch (error) {
-    if (error instanceof IssueApiError) response = NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof IssueApiError) response = NextResponse.json(error.body ? { error: error.message, ...error.body } : { error: error.message }, { status: error.status });
     else if (error instanceof z.ZodError) response = NextResponse.json({ error: "Invalid input.", details: error.issues }, { status: 422 });
     else response = agentErrorResponse(error);
   } finally {
@@ -68,6 +86,9 @@ export async function agentIssueRequest(
       }
     }
   }
+  // #646/#596: every charged response — success, validation failure, or a
+  // domain error thrown after the charge — reports the same quota.
+  if (quota) response = withAgentBudgetHeaders(response, quota);
   response.headers.set("Cache-Control", "private, no-store");
   return response;
 }
@@ -79,7 +100,7 @@ export async function issueJson(request: NextRequest): Promise<unknown> {
 
 /** The 400 for an issue route called without a project. */
 export const PROJECT_ID_REQUIRED =
-  "projectId is required. Pass it as ?projectId= or in the JSON body. Your owner can copy it from the agent key menu in the Ziki header.";
+  "projectId is required. Pass it as ?projectId= or in the JSON body. Your owner can copy it from Settings, under Agents.";
 
 /** Every call names a project; a project id alone never grants access to its tenant. */
 export async function issueProject(agent: AgentContext, params: URLSearchParams, bodyProjectId?: string) {
@@ -96,51 +117,112 @@ export async function issueProject(agent: AgentContext, params: URLSearchParams,
 }
 
 type Scope = { tenantId: string; projectId: string };
-const issueSelect = {
+export const issueSelect = {
   id: true, number: true, title: true, description: true, status: true, severity: true,
   categoryId: true, typeId: true, reporterId: true, assigneeId: true, beneficiaryUserId: true,
-  createdByAgentId: true, projectId: true, createdAt: true, updatedAt: true, proofLinks: true,
+  createdByAgentId: true, projectId: true, areaId: true, createdAt: true, updatedAt: true, proofLinks: true,
+  area: { select: { id: true, name: true, slug: true } },
 } satisfies Prisma.BugSelect;
+
+/**
+ * #409: the shared parsers turn an unknown id into "no filter" so a stale web
+ * link shows everything. An API client that sends a mistyped id must be told,
+ * not handed the whole backlog.
+ */
+export function requireKnownFilter(name: "platform" | "area", raw: string | null, parsed: string | null): string | null {
+  if (raw?.trim() && parsed === null) {
+    throw new IssueApiError(422, `Unknown ${name} id "${raw.trim()}". Use an id from this project, or "none".`);
+  }
+  return parsed;
+}
 
 export async function listAgentIssues(scope: Scope, params: URLSearchParams) {
   const status = params.get("status");
   const severity = params.get("severity");
   const assignee = params.get("assignee");
+  const stageRaw = params.get("stage");
+  const stage: IssueStage | null = stageRaw ? stageSchema.parse(stageRaw) : null;
   const platforms = await prisma.category.findMany({
     where: { tenantId: scope.tenantId },
     select: { id: true, name: true },
   });
+  const requestedArea = params.get("area");
+  const areas = requestedArea
+    ? await prisma.projectArea.findMany({ where: { projectId: scope.projectId }, select: { id: true, name: true } })
+    : [];
   const cursorRaw = params.get("cursor");
   const cursor = decodeCursor(cursorRaw);
   if (cursorRaw !== null && !cursor) throw new IssueApiError(400, "Invalid cursor.");
   const limit = pageSize(params.get("limit"));
-  const where: Prisma.BugWhereInput = {
-    ...scope, isDeleted: false,
+  const q = params.get("q")?.trim();
+  // #460: same escaped, bounded title/description match the app list uses. AND keeps it apart from the cursor's OR.
+  const search: Prisma.BugWhereInput = q
+    ? { AND: [{ OR: [
+        { title: { contains: escapeSearchQuery(boundSearchTerm(q)), mode: "insensitive" } },
+        { description: { contains: escapeSearchQuery(boundSearchTerm(q)), mode: "insensitive" } },
+      ] }] }
+    : {};
+  const filtered: Prisma.BugWhereInput = {
+    ...scope, isDeleted: false, ...search,
     ...(status ? { status: statusSchema.parse(status) } : {}),
     ...(severity ? { severity: severitySchema.parse(severity) } : {}),
     ...(assignee ? { assigneeId: assignee === "none" ? null : idSchema.parse(assignee) } : {}),
-    ...platformFilterWhere(parsePlatformFilter(params.get("platform"), platforms)),
-    ...cursorWhere(cursor),
+    ...platformFilterWhere(requireKnownFilter("platform", params.get("platform"), parsePlatformFilter(params.get("platform"), platforms))),
+    ...projectAreaFilterWhere(requireKnownFilter("area", requestedArea, parseProjectAreaFilter(requestedArea, areas))),
   };
+  if (stage) {
+    // A stage only exists on an open issue. Any other status is an empty page.
+    if (filtered.status && filtered.status !== "open") return { items: [], nextCursor: null };
+    filtered.status = "open";
+    const stages = await openIssueStages(prisma, filtered);
+    const ids = [...stages.entries()].filter(([, value]) => value === stage).map(([id]) => id);
+    if (ids.length === 0) return { items: [], nextCursor: null };
+    filtered.id = { in: ids };
+  }
+  const where: Prisma.BugWhereInput = { ...filtered, ...cursorWhere(cursor) };
   const rows = await prisma.bug.findMany({ where, orderBy: cursorOrderBy(), take: limit + 1, select: issueSelect });
   return toPage(rows, limit);
 }
 
+const validationSelect = {
+  id: true,
+  kind: true,
+  verdict: true,
+  severity: true,
+  duplicateOfId: true,
+  agentId: true,
+  onBehalfOfUserId: true,
+  createdAt: true,
+} satisfies Prisma.IssueValidationSelect;
+
 export async function readAgentIssue(scope: Scope, id: string) {
   const issue = await prisma.bug.findFirst({
     where: { ...scope, id, isDeleted: false },
-    select: { ...issueSelect, comments: {
+    select: { ...issueSelect, voteCount: true, comments: {
       where: { deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 100,
-      select: { id: true, body: true, authorId: true, agentId: true, parentId: true, createdAt: true, editedAt: true },
+      select: { id: true, body: true, authorId: true, agentId: true, parentId: true, type: true, metadata: true, createdAt: true, editedAt: true },
+    }, attachments: {
+      // #645: metadata only; bytes are served to signed-in people at /api/attachments/{id}.
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true, filename: true, contentType: true, size: true, commentId: true, createdAt: true },
+    }, validations: {
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: validationSelect,
     }, _count: { select: { comments: { where: { deletedAt: null } } } } },
   });
   if (!issue) throw new IssueApiError(404, "Issue not found.");
-  return issue;
+  const confirmed = await isConfirmed(issue.id);
+  const { voteCount, ...publicIssue } = issue;
+  return {
+    ...publicIssue,
+    confirmed,
+    intake: intakeKind({ status: issue.status, voteCount, confirmed }),
+  };
 }
 
 /** What a paged comment carries: the embedded read's fields plus who wrote it. */
 const commentSelect = {
-  id: true, body: true, authorId: true, agentId: true, parentId: true, createdAt: true, editedAt: true,
+  id: true, body: true, authorId: true, agentId: true, parentId: true, type: true, metadata: true, createdAt: true, editedAt: true,
   author: { select: { id: true, name: true } },
   agent: { select: { id: true, name: true } },
 } satisfies Prisma.CommentSelect;
@@ -166,10 +248,22 @@ export async function listAgentIssueComments(scope: Scope, id: string, params: U
   const cursor = decodeCursor(cursorRaw);
   if (cursorRaw !== null && !cursor) throw new IssueApiError(400, "Invalid cursor.");
   const limit = pageSize(params.get("limit"));
+  const typeParam = params.get("type");
+  const validTypes = ["comment", "bid", "review", "delivery", "request_to_merge"];
+  if (typeParam && !validTypes.includes(typeParam)) {
+    throw new IssueApiError(400, `Unknown comment type: ${typeParam}.`, { validTypes });
+  }
+  const filterType = typeParam ? (typeParam as Prisma.EnumCommentTypeFilter["equals"]) : undefined;
+
   const issue = await prisma.bug.findFirst({ where: { ...scope, id, isDeleted: false }, select: { id: true } });
   if (!issue) throw new IssueApiError(404, "Issue not found.");
   const rows = await prisma.comment.findMany({
-    where: { bugId: id, deletedAt: null, ...(cursor ? commentsAfter(cursor) : {}) },
+    where: {
+      bugId: id,
+      deletedAt: null,
+      ...(filterType ? { type: filterType } : {}),
+      ...(cursor ? commentsAfter(cursor) : {}),
+    },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: limit + 1,
     select: commentSelect,
@@ -188,7 +282,9 @@ async function normalizeTenantMentions(db: Prisma.TransactionClient, tenantId: s
 export async function createAgentIssue(agent: AgentContext, request: NextRequest) {
   const input = createSchema.parse(await issueJson(request));
   const scope = await issueProject(agent, request.nextUrl.searchParams, input.projectId);
-  const beneficiaryUserId = input.beneficiaryUserId ?? agent.ownerId;
+  // #494: always the agent's owner. The create schema no longer accepts a
+  // beneficiary, so no request can put words in another person's mouth.
+  const beneficiaryUserId = agent.ownerId;
   const requestHash = hashCreateRequest({
     projectId: scope.projectId,
     beneficiaryUserId,
@@ -199,6 +295,9 @@ export async function createAgentIssue(agent: AgentContext, request: NextRequest
     typeId: input.typeId ?? null,
     severity: input.severity ?? null,
     acknowledgeSimilar: input.acknowledgeSimilar ?? null,
+    // Only when sent, so keys stored before #645 still replay.
+    ...(input.attachmentIds?.length ? { attachmentIds: [...new Set(input.attachmentIds)].sort() } : {}),
+    ...(input.areaId ? { areaId: input.areaId } : {}),
   });
   const result = await createIssueWithPolicy({
     agent, projectId: scope.projectId, idempotencyKey: request.headers.get("Idempotency-Key"),
@@ -217,16 +316,27 @@ export async function createAgentIssue(agent: AgentContext, request: NextRequest
         });
         if (!category) throw new IssueApiError(422, "Platform not found or inactive.");
       }
+      const areaId = input.areaId || null;
+      if (areaId) {
+        const area = await tx.projectArea.findFirst({
+          where: { id: areaId, projectId: scope.projectId },
+          select: { id: true },
+        });
+        if (!area) throw new IssueApiError(422, "Area not found in this project.");
+      }
       const description = await normalizeTenantMentions(tx, scope.tenantId, input.description);
       const issue = await tx.bug.create({
         data: {
-          ...scope, ...policy, title: input.title, description, status: "open", categoryId,
+          ...scope, ...policy, title: input.title, description, status: "open", categoryId, areaId,
           reporterId: beneficiaryUserId, beneficiaryUserId, createdByAgentId: agent.agentId,
           proofLinks: input.proofLinks,
           watches: { create: { userId: beneficiaryUserId } },
           activities: { create: { actorId: beneficiaryUserId, type: "created", summary: createdSummary(input.title) } },
         }, select: { id: true },
       });
+      // #645: files this agent's owner uploaded through the API (or that the
+      // description links) become the issue's attachments.
+      await linkAgentAttachments(tx, agent, { requested: input.attachmentIds, text: description, bugId: issue.id });
       await audit(agent, "issue.created", issue.id, { beneficiaryUserId }, { db: tx, bugId: issue.id });
       await publish(tx, {
         tenantId: scope.tenantId,
@@ -282,9 +392,28 @@ export async function commentOnAgentIssue(agent: AgentContext, request: NextRequ
     }
     const body = await normalizeTenantMentions(tx, scope.tenantId, input.body);
     const created = await tx.comment.create({
-      data: { bugId, authorId: agent.ownerId, agentId: agent.agentId, body, parentId: input.parentId ?? null },
-      select: { id: true, bugId: true, authorId: true, agentId: true, body: true, parentId: true, createdAt: true },
+      data: {
+        bugId,
+        authorId: agent.ownerId,
+        agentId: agent.agentId,
+        body,
+        parentId: input.parentId ?? null,
+        type: input.type ?? "comment",
+        metadata: input.metadata ? (input.metadata as Prisma.InputJsonValue) : undefined,
+      },
+      select: {
+        id: true,
+        bugId: true,
+        authorId: true,
+        agentId: true,
+        body: true,
+        parentId: true,
+        type: true,
+        metadata: true,
+        createdAt: true,
+      },
     });
+    await linkAgentAttachments(tx, agent, { requested: input.attachmentIds, text: body, bugId, commentId: created.id });
     await tx.bugActivity.create({ data: {
       bugId, actorId: agent.ownerId, type: "commented", summary: commentedSummary(body),
       metadata: { commentId: created.id, commentPreview: commentPreview(body) },
@@ -336,4 +465,30 @@ function notifyAgentComment(
     excludeIds: mentioned,
   });
   notifyLater(...events);
+}
+
+/**
+ * Link uploads to an agent's new issue or comment (#645), the same way the web
+ * forms do: only the owner's own uploads that aren't attached anywhere yet
+ * can be claimed. Ids the agent named explicitly must all link, or the whole
+ * write is refused (422), so an agent never silently loses its evidence.
+ * Ids that only appear as /api/attachments/<id> links in the text are best
+ * effort, as on the web.
+ */
+async function linkAgentAttachments(
+  tx: Prisma.TransactionClient,
+  agent: AgentContext,
+  input: { requested?: string[]; text: string; bugId: string; commentId?: string | null },
+): Promise<void> {
+  const requested = [...new Set(input.requested ?? [])];
+  if (requested.length > 0) {
+    const linked = await linkAttachments(tx, { ids: requested, uploaderId: agent.ownerId, bugId: input.bugId, commentId: input.commentId ?? null });
+    if (linked !== requested.length) {
+      throw new IssueApiError(422, "One or more attachmentIds weren't found, belong to someone else, or are already attached.");
+    }
+  }
+  const referenced = attachmentIdsInMarkdown(input.text).filter((id) => !requested.includes(id));
+  if (referenced.length > 0) {
+    await linkAttachments(tx, { ids: referenced, uploaderId: agent.ownerId, bugId: input.bugId, commentId: input.commentId ?? null });
+  }
 }

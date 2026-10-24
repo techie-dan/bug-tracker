@@ -1,15 +1,32 @@
 import Link from "next/link";
-import { requireAdmin } from "@/lib/auth-helpers";
-import { loadMilestoneSummaries } from "@/lib/milestone-stats";
+import { redirect } from "next/navigation";
+import { requireUser } from "@/lib/auth-helpers";
+import { loadMilestoneSummaries, milestoneScopeFor } from "@/lib/milestone-stats";
 import { dueDateValue } from "@/lib/milestones";
 import { MilestoneManager } from "@/components/milestone-manager";
 
-/* Distinct browser-tab title; the root layout appends "· Ziki Issues". */
+/* Distinct browser-tab title; the root layout appends "· Ziki". */
 export const metadata = { title: "Milestones" };
 
 export default async function AdminMilestonesPage() {
-  await requireAdmin();
-  const milestones = await loadMilestoneSummaries();
+  const scope = await milestoneScopeFor(await requireUser());
+  if (!scope.ok) {
+    if (scope.forbidden) redirect("/milestones");
+    return (
+      <div className="space-y-3">
+        <h1 className="text-2xl font-semibold text-slate-900">Milestone management</h1>
+        <p className="max-w-xl text-sm text-slate-600">
+          Open an organization first. Milestones belong to one organization, not to every
+          account on the site.
+        </p>
+        <Link href="/tenants" className="text-sm font-medium text-teal-700 hover:underline">
+          Choose an organization
+        </Link>
+      </div>
+    );
+  }
+
+  const milestones = await loadMilestoneSummaries({ tenantId: scope.tenantId });
 
   return (
     <div className="space-y-6">

@@ -15,7 +15,8 @@ import {
 } from "@/lib/mentions";
 import { applyTextChange } from "@/lib/editor-dom";
 
-export type MentionUser = { id: string; name: string };
+/** `agentOwner` marks an agent option (`id` is `agent:<id>`) and names its owner (#603). */
+export type MentionUser = { id: string; name: string; agentOwner?: string };
 
 /**
  * Shared @mention autocomplete state so every editor (bug description,

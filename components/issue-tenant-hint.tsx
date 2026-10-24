@@ -20,8 +20,8 @@ export function IssueTenantSwitch({
         This issue is in {tenant.name}
       </h1>
       <p className="text-sm text-slate-600">
-        You&apos;re a member of {tenant.name}, but a different tenant is active on this
-        device. Switch tenant to open the issue.
+        You&apos;re a member of {tenant.name}, but a different workspace is active on this
+        device. Switch workspace to open the issue.
       </p>
       <form action={switchTenantForIssueAction}>
         <input type="hidden" name="issueId" value={issueId} />

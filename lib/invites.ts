@@ -31,7 +31,7 @@ export const CREATE_INVITE_RATE_LIMIT = { max: 30, windowMs: 60 * 60 * 1000 };
 export const ACCEPT_INVITE_RATE_LIMIT = { max: 20, windowMs: 15 * 60 * 1000 };
 
 /** The same words whether the tenant doesn't exist or isn't yours to manage. */
-export const INVITE_NOT_ALLOWED = "Only an owner or admin of this tenant can manage its invites.";
+export const INVITE_NOT_ALLOWED = "Only an owner or admin of this organization can manage its invites.";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 
@@ -412,19 +412,87 @@ export type PendingInvite = {
   invitedByName: string;
 };
 
+export type AccountInvite = {
+  id: string;
+  expiresAt: Date;
+  tenant: { id: string; name: string; slug: string };
+  invitedByName: string;
+};
+
+/**
+ * Live invites addressed to this account. The tenants page lists these so
+ * the person can join without pasting the link. One they already belong to
+ * is left out.
+ */
+export async function openInvitesFor(
+  db: Db,
+  account: { id: string; email?: string | null },
+  now = new Date(),
+): Promise<AccountInvite[]> {
+  const email = account.email?.trim();
+  if (!email) return [];
+  const rows = await db.tenantInvite.findMany({
+    where: {
+      email: { equals: email, mode: "insensitive" },
+      acceptedAt: null,
+      expiresAt: { gt: now },
+    },
+    select: {
+      id: true,
+      expiresAt: true,
+      tenantId: true,
+      tenant: { select: { id: true, name: true, slug: true } },
+      invitedBy: { select: { name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  const open: AccountInvite[] = [];
+  for (const row of rows) {
+    const membership = await db.membership.findUnique({
+      where: { tenantId_userId: { tenantId: row.tenantId, userId: account.id } },
+      select: { id: true },
+    });
+    if (membership) continue;
+    open.push({
+      id: row.id,
+      expiresAt: row.expiresAt,
+      tenant: row.tenant,
+      invitedByName: row.invitedBy.name,
+    });
+  }
+  return open;
+}
+
 /** Links still waiting to be used, newest first. */
 export async function pendingInvites(
   db: Db,
   tenantId: string,
   now = new Date(),
 ): Promise<PendingInvite[]> {
+  // The inviter is loaded apart so a deleted account does not fail the page.
   const rows = await db.tenantInvite.findMany({
     where: { tenantId, acceptedAt: null, expiresAt: { gt: now } },
-    select: { id: true, email: true, expiresAt: true, createdAt: true, invitedBy: { select: { name: true } } },
+    select: { id: true, email: true, expiresAt: true, createdAt: true, invitedById: true },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
-  return rows.map(({ invitedBy, ...row }) => ({ ...row, invitedByName: invitedBy.name }));
+  const ids = [...new Set(rows.map((row) => row.invitedById))];
+  const people =
+    ids.length === 0
+      ? []
+      : await db.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        });
+  const names = new Map(people.map((person) => [person.id, person.name]));
+  return rows.map((row) => ({
+    id: row.id,
+    email: row.email,
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+    invitedByName: names.get(row.invitedById) ?? "Someone",
+  }));
 }
 
 export type RevokeInviteResult =

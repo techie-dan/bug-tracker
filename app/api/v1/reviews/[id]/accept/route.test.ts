@@ -69,7 +69,7 @@ describe("POST /api/v1/reviews/[id]/accept (#597)", () => {
     const body = await res.json();
     expect(body).toEqual({ offer: { id: "offer-1", status: "accepted" } });
     expect(mocks.acceptReviewOffer).toHaveBeenCalledWith(reviewerAgent, "offer-1");
-    expect(mocks.budget).toHaveBeenCalledWith({ id: "r1", burst: false }, "write");
+    expect(mocks.budget).toHaveBeenCalledWith({ id: "r1", burst: false, burstUntil: null }, "write");
   });
 
   it("rejects non-reviewer agents with 403", async () => {

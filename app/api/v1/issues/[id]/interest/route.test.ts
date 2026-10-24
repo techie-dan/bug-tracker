@@ -106,7 +106,7 @@ describe("Issue Interest Routes (#589)", () => {
       const data = await res.json();
       expect(data.interest.id).toBe("int-1");
       expect(mocks.registerInterest).toHaveBeenCalledWith(contributorAgent, "proj-1", "bug-1", "volunteering");
-      expect(mocks.budget).toHaveBeenCalledWith({ id: "c1", burst: false }, "write");
+      expect(mocks.budget).toHaveBeenCalledWith({ id: "c1", burst: false, burstUntil: null }, "write");
       expect(db.agentAuditEvent.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ action: "issues.interest" }),

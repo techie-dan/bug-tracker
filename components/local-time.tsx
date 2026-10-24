@@ -39,7 +39,7 @@ export function LocalTime({ date, className }: LocalTimeProps) {
         : "";
 
   return (
-    <time dateTime={iso} className={className}>
+    <time dateTime={iso} className={className} title={`${formatted} (${timeZone})`}>
       {formatted}
     </time>
   );

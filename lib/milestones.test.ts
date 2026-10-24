@@ -3,12 +3,16 @@ import {
   daysUntil,
   dueDateValue,
   dueLabel,
+  MILESTONE_PARAM,
+  milestoneIssuesHref,
   milestoneParamValue,
   milestoneProgress,
   milestoneWhere,
   parseDueDate,
   parseMilestoneFilter,
 } from "./milestones";
+import { SHOW_RESOLVED_PARAM, parseShowResolved } from "./issue-state";
+import { DUPLICATES_PARAM, parseShowDuplicates } from "./duplicates";
 
 describe("due dates", () => {
   it("parses a calendar day to UTC midnight and back", () => {
@@ -53,5 +57,29 @@ describe("milestone filter", () => {
     expect(milestoneWhere(null)).toEqual({});
     expect(milestoneParamValue("none")).toBe("none");
     expect(milestoneParamValue({ id: "m1" })).toBe("m1");
+  });
+});
+
+describe("milestoneIssuesHref", () => {
+  // The link reads "All N issues", and N counts resolved, closed and
+  // duplicate issues, which the list hides unless asked (#1058, #285).
+  const href = milestoneIssuesHref("m1");
+  const url = new URL(href, "https://ziki.dev");
+
+  it("opens the issues list filtered to the milestone", () => {
+    expect(url.pathname).toBe("/issues");
+    expect(parseMilestoneFilter(url.searchParams.get(MILESTONE_PARAM) ?? undefined, [{ id: "m1" }])).toEqual({ id: "m1" });
+  });
+
+  it("asks the list to show resolved and closed issues", () => {
+    expect(parseShowResolved(url.searchParams.get(SHOW_RESOLVED_PARAM))).toBe(true);
+  });
+
+  it("asks the list to show duplicates", () => {
+    expect(parseShowDuplicates(url.searchParams.get(DUPLICATES_PARAM) ?? undefined)).toBe(true);
+  });
+
+  it("encodes the id", () => {
+    expect(new URL(milestoneIssuesHref("a&b"), "https://ziki.dev").searchParams.get(MILESTONE_PARAM)).toBe("a&b");
   });
 });

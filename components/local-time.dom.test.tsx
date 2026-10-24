@@ -43,6 +43,7 @@ describe("LocalTime", () => {
       // In America/New_York (UTC-4 in Oct), 18:30 UTC is 2:30 PM
       expect(timeEl?.textContent).toBe("Oct 15, 2026, 2:30 PM");
       expect(timeEl?.getAttribute("datetime")).toBe("2026-10-15T18:30:00.000Z");
+      expect(timeEl?.getAttribute("title")).toBe("Oct 15, 2026, 2:30 PM (America/New_York)");
       expect(timeEl?.getAttribute("suppresshydrationwarning")).toBeNull();
     } finally {
       spy.mockRestore();

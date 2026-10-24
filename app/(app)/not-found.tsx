@@ -1,41 +1,24 @@
 import Link from "next/link";
-import { auth } from "@/auth";
-import {
-  StatusPage,
-  primaryActionClass,
-  secondaryActionClass,
-} from "@/components/status-page";
+import { StatusPage, primaryActionClass } from "@/components/status-page";
 
 /**
- * Shown when a signed-in page calls notFound(), e.g. an issue id that doesn't
- * exist or was deleted (#214). Anonymous visitors (link-preview fallbacks) get
- * a sign-in link, because the issue may simply need a session to view.
+ * Shown when a signed-in page calls notFound() and its segment has no
+ * not-found.tsx of its own (#214). Pages for one kind of thing (issues,
+ * people, projects, agents, redesigns, escalations) name it in their own
+ * not-found.tsx; this one stays general so it never names the wrong thing.
  */
-export default async function AppNotFound() {
-  const session = await auth();
-  const signedIn = Boolean(session?.user);
-
+export default function AppNotFound() {
   return (
     <StatusPage
       code="404"
-      title="We couldn't find that issue"
+      title="We couldn't find that page"
       actions={
-        <>
-          <Link href="/issues" className={primaryActionClass}>
-            Go to issues
-          </Link>
-          {signedIn ? null : (
-            <Link href="/login" className={secondaryActionClass}>
-              Sign in
-            </Link>
-          )}
-        </>
+        <Link href="/issues" className={primaryActionClass}>
+          Go to issues
+        </Link>
       }
     >
-      <p>
-        The link may be wrong, or the issue may have been deleted.
-        {signedIn ? null : " Some issues are only visible after you sign in."}
-      </p>
+      <p>The link may be wrong, or what it pointed to may have been moved or deleted.</p>
     </StatusPage>
   );
 }

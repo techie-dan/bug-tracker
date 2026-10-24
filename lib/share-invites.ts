@@ -16,7 +16,7 @@ import { absoluteUrl } from "@/lib/site-url";
  * lasts and how many people may use it. Opening it and signing in with
  * Google (or any other sign-in) adds that account to the tenant as a member.
  *
- * The raw token is sealed with AUTH_SECRET so owners can copy it again.
+ * The raw token is sealed with NEXTAUTH_SECRET so owners can copy it again.
  * Acceptance looks up the SHA-256 hash. A mail scanner that only GETs the
  * page cannot spend a use; joining is a POST from the signed-in account.
  */
@@ -222,6 +222,8 @@ export type ManagedShareLink = {
 
 /** Newest links first, active ones before links that no longer work. */
 export async function listShareLinks(db: Db, tenantId: string, now = new Date()): Promise<ManagedShareLink[]> {
+  // Names are loaded apart from the links. Joining `invitedBy` or `user` makes
+  // Prisma throw when that account is gone, and the invite screen dies.
   const rows = await db.tenantShareLink.findMany({
     where: { tenantId },
     orderBy: { createdAt: "desc" },
@@ -235,14 +237,27 @@ export async function listShareLinks(db: Db, tenantId: string, now = new Date())
       useCount: true,
       revokedAt: true,
       createdAt: true,
-      invitedBy: { select: { name: true } },
+      invitedById: true,
       redemptions: {
         orderBy: { createdAt: "desc" },
         take: 8,
-        select: { user: { select: { name: true } } },
+        select: { userId: true },
       },
     },
   });
+  const ids = [
+    ...new Set(
+      rows.flatMap((row) => [row.invitedById, ...row.redemptions.map((redemption) => redemption.userId)]),
+    ),
+  ];
+  const people =
+    ids.length === 0
+      ? []
+      : await db.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        });
+  const names = new Map(people.map((person) => [person.id, person.name]));
 
   const links = rows.map((row) => {
     const raw = readStoredToken(row.tokenEncrypted);
@@ -255,8 +270,11 @@ export async function listShareLinks(db: Db, tenantId: string, now = new Date())
       useCount: row.useCount,
       state: shareLinkState(row, now),
       createdAt: row.createdAt,
-      invitedByName: row.invitedBy.name,
-      joinedNames: row.redemptions.map((redemption) => redemption.user.name),
+      invitedByName: names.get(row.invitedById) ?? "Someone",
+      joinedNames: row.redemptions.flatMap((redemption) => {
+        const name = names.get(redemption.userId);
+        return name ? [name] : [];
+      }),
     };
   });
 

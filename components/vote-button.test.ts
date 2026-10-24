@@ -13,25 +13,24 @@ const countDisabled = (html: string) =>
 
 describe("VoteButton read-only mode (#122)", () => {
   for (const size of ["sm", "md"] as const) {
-    it(`keeps like/dislike enabled normally (${size})`, () => {
+    it(`keeps the upvote enabled normally (${size})`, () => {
       const html = renderToStaticMarkup(
         createElement(VoteButton, { bugId: "b1", voteCount: 3, size }),
       );
       expect(countDisabled(html)).toBe(0);
     });
 
-    it(`disables like and dislike but still shows counts on deleted issues (${size})`, () => {
+    it(`disables the upvote but still shows the count on deleted issues (${size})`, () => {
       const html = renderToStaticMarkup(
         createElement(VoteButton, {
           bugId: "b1",
           voteCount: 3,
           likeCount: 3,
-          dislikeCount: 0,
           size,
           readOnly: true,
         }),
       );
-      expect(countDisabled(html)).toBe(2);
+      expect(countDisabled(html)).toBe(1);
       expect(html).toContain("3");
     });
   }

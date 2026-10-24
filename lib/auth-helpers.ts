@@ -70,18 +70,29 @@ export async function requireUser(): Promise<SessionAppUser> {
   const dbUser = await prisma.user
     .findUnique({
       where: { id: userId },
-      select: { id: true, name: true, email: true, image: true, role: true },
+      select: { id: true, name: true, email: true, image: true, role: true, sessionVersion: true },
     })
     .catch(async () => {
       const basic = await prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, name: true, email: true },
+        select: { id: true, name: true, email: true, sessionVersion: true },
       });
       if (!basic) return null;
-      return { ...basic, image: null, role: "user" as Role };
+      return { ...basic, image: null, role: "user" as Role, sessionVersion: basic.sessionVersion ?? 0 };
     });
 
   if (!dbUser) {
+    redirect(SESSION_EXPIRED_PATH);
+  }
+
+  // Reject session when sessionVersion or role does not match DB (#655)
+  const tokenVersion = session.user.sessionVersion ?? 0;
+  const userVersion = (dbUser as { sessionVersion?: number }).sessionVersion ?? 0;
+  if (tokenVersion !== userVersion) {
+    redirect(SESSION_EXPIRED_PATH);
+  }
+
+  if (session.user.role && session.user.role !== dbUser.role) {
     redirect(SESSION_EXPIRED_PATH);
   }
 
@@ -93,7 +104,11 @@ export async function requireUser(): Promise<SessionAppUser> {
     try {
       await prisma.user.update({
         where: { id: dbUser.id },
-        data: { role: "super_admin" },
+        data: { role: "super_admin", sessionVersion: { increment: 1 } },
+      });
+      logger.info("[auth] privilege change: super admin role updated via email", {
+        userId: dbUser.id,
+        email: dbUser.email,
       });
       dbUser.role = "super_admin";
     } catch (error) {

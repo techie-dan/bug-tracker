@@ -65,6 +65,7 @@ import {
   RATE_LIMIT_MESSAGE,
   resetRateLimits,
 } from "@/lib/rate-limit";
+import { TICKET_ASSIGN_ERRORS } from "@/lib/ticket-assignment";
 import { editBugContentAction, selfAssignBugAction } from "./issues";
 
 const mockBugFindUnique = vi.mocked(prisma.bug.findUnique) as unknown as ReturnType<typeof vi.fn>;
@@ -102,8 +103,8 @@ describe("action rate limits on bug edits and self-assign (#350)", () => {
     });
   });
 
-  describe("selfAssignBugAction rate limiting", () => {
-    it("returns error when self-assignment limit is exceeded", async () => {
+  describe("selfAssignBugAction", () => {
+    it("refuses to take an issue before an agent claim", async () => {
       mockBugFindUnique.mockResolvedValue({
         id: "bug-1",
         title: "Test Bug",
@@ -112,15 +113,9 @@ describe("action rate limits on bug edits and self-assign (#350)", () => {
         assignee: null,
       });
 
-      const max = ACTION_RATE_LIMITS.selfAssign.max;
-      for (let i = 0; i < max; i++) {
-        // Toggle assign/unassign
-        const result = await selfAssignBugAction("bug-1", true);
-        expect(result).toEqual({ ok: true });
-      }
-
-      const blocked = await selfAssignBugAction("bug-1", true);
-      expect(blocked).toEqual({ error: RATE_LIMIT_MESSAGE });
+      const result = await selfAssignBugAction("bug-1", true);
+      expect(result).toEqual({ error: TICKET_ASSIGN_ERRORS.needsAgentClaim });
+      expect(prisma.bug.update).not.toHaveBeenCalled();
     });
   });
 });

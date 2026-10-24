@@ -76,6 +76,17 @@ describe("projectContextFor (#426)", () => {
     expect((db as { project: { findMany: ReturnType<typeof vi.fn> } }).project.findMany)
       .not.toHaveBeenCalled();
   });
+
+  it("leaves archived projects out of the switcher (#573)", async () => {
+    const findMany = vi.fn().mockResolvedValue(projects);
+    const db = { project: { findMany } } as never;
+    await projectContextFor(db, "tenant-zedu");
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: "tenant-zedu", archivedAt: null },
+      }),
+    );
+  });
 });
 
 describe("setActiveProjectCookie (#426)", () => {

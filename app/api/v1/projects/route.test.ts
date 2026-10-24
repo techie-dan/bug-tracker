@@ -43,13 +43,49 @@ describe("agent project discovery (#607)", () => {
     await expect(response.json()).resolves.toEqual({
       items: [
         { id: "project-web", slug: "web", name: "Web", goal: "Ship Ziki", repoUrl: "https://github.com/web", stagingUrl: "https://stage",
-          workflow: { confirmationsNeeded: 2, verdictsNeeded: 2 }, openIssueCount: 3 },
+          workflow: {
+            confirmationsNeeded: 2, verdictsNeeded: 2, offerWindowSeconds: 600,
+            heartbeatMinutes: 15, deliveryMinutes: 15, maxActiveClaims: 2,
+            volunteerWindowSeconds: 120, autoMerge: true,
+          }, openIssueCount: 3,
+          rewardRules: { guidelines: null, reporter: 5, reviewer: 10, solver: { critical: 60, high: 40, low: 15, medium: 25 } } },
         { id: "project-api", slug: "api", name: "API", goal: null, repoUrl: null, stagingUrl: null,
-          workflow: { confirmationsNeeded: 2, verdictsNeeded: 2 }, openIssueCount: 0 },
+          workflow: {
+            confirmationsNeeded: 2, verdictsNeeded: 2, offerWindowSeconds: 600,
+            heartbeatMinutes: 15, deliveryMinutes: 15, maxActiveClaims: 2,
+            volunteerWindowSeconds: 120, autoMerge: true,
+          }, openIssueCount: 0,
+          rewardRules: { guidelines: null, reporter: 5, reviewer: 10, solver: { critical: 60, high: 40, low: 15, medium: 25 } } },
       ],
     });
     expect(db.project.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: "tenant-a" } }));
     expect(db.agentAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: "projects.list" }) }));
+  });
+
+  it("returns each project's own workflow settings (#595)", async () => {
+    db.project.findMany.mockResolvedValue([
+      {
+        id: "project-web", slug: "web", name: "Web", goal: null, repoUrl: null, stagingUrl: null,
+        workflow: {
+          confirmationsNeeded: 3, verdictsNeeded: 4, offerWindowSeconds: 120,
+          heartbeatMinutes: 20, deliveryMinutes: 30, maxActiveClaims: 3,
+          volunteerWindowSeconds: 300, autoMerge: false,
+        },
+      },
+      {
+        id: "project-api", slug: "api", name: "API", goal: null, repoUrl: null, stagingUrl: null,
+        workflow: null,
+      },
+    ]);
+    const response = await list(request());
+    const body = (await response.json()) as { items: Array<{ id: string; workflow: Record<string, unknown> }> };
+    expect(body.items[0].workflow).toMatchObject({
+      confirmationsNeeded: 3,
+      verdictsNeeded: 4,
+      offerWindowSeconds: 120,
+      autoMerge: false,
+    });
+    expect(body.items[1].workflow).toMatchObject({ confirmationsNeeded: 2, autoMerge: true });
   });
 
   it("never counts another tenant's issues", async () => {
@@ -64,7 +100,12 @@ describe("agent project discovery (#607)", () => {
     const response = await readOne(request("http://localhost/api/v1/projects/project-web"), { params: Promise.resolve({ id: "project-web" }) });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      id: "project-web", goal: "Ship Ziki", openIssueCount: 7, workflow: { confirmationsNeeded: 2, verdictsNeeded: 2 },
+      id: "project-web", goal: "Ship Ziki", openIssueCount: 7,
+      workflow: {
+        confirmationsNeeded: 2, verdictsNeeded: 2, offerWindowSeconds: 600,
+        heartbeatMinutes: 15, deliveryMinutes: 15, maxActiveClaims: 2,
+        volunteerWindowSeconds: 120, autoMerge: true,
+      },
     });
     expect(db.project.findFirst).toHaveBeenCalledWith({ where: { id: "project-web", tenantId: "tenant-a" }, select: expect.objectContaining({ goal: true }) });
     db.project.findFirst.mockResolvedValueOnce(null);
@@ -79,6 +120,6 @@ describe("agent project discovery (#607)", () => {
     expect((await list(request())).status).toBe(401);
     expect(db.project.findMany).not.toHaveBeenCalled();
     await list(request());
-    expect(budget).toHaveBeenLastCalledWith({ id: "agent-a", burst: false }, "read");
+    expect(budget).toHaveBeenLastCalledWith({ id: "agent-a", burst: false, burstUntil: null }, "read");
   });
 });

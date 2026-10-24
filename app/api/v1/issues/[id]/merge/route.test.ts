@@ -37,7 +37,7 @@ describe("POST /api/v1/issues/[id]/merge (#434)", () => {
     const response = await POST(request(), params);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ accepted: true, solverUserId: "ada", rewardedReviewerUserIds: ["rob", "sam"] });
-    expect(mocks.budget).toHaveBeenCalledWith({ id: "m1", burst: false }, "write");
+    expect(mocks.budget).toHaveBeenCalledWith({ id: "m1", burst: false, burstUntil: null }, "write");
     expect(mocks.accept).toHaveBeenCalledWith(agent, "bug1");
   });
 

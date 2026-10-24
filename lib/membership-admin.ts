@@ -167,6 +167,12 @@ export async function changeMembershipRole(
       fromRole: target.role,
       toRole: input.nextRole,
     });
+    if (typeof tx.user?.update === "function") {
+      await tx.user.update({
+        where: { id: input.targetUserId },
+        data: { sessionVersion: { increment: 1 } },
+      });
+    }
     return { ok: true };
   });
 }
@@ -212,6 +218,12 @@ export async function removeMembership(
       fromRole: target.role,
       toRole: null,
     });
+    if (typeof tx.user?.update === "function") {
+      await tx.user.update({
+        where: { id: input.targetUserId },
+        data: { sessionVersion: { increment: 1 } },
+      });
+    }
     return { ok: true };
   });
 }

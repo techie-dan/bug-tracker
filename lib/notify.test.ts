@@ -81,6 +81,22 @@ describe("deliverNotifications", () => {
     expect(send.mock.calls[0][0].to).toBe("bob@x.dev");
   });
 
+  it("keeps a tenant invite out of the destination workspace", async () => {
+    findMany.mockResolvedValue([who("cara")]);
+    await deliverNotifications({
+      kind: "tenant_invite",
+      actorId: "alice",
+      actorName: "Alice",
+      recipientId: "cara",
+      tenantId: "tenant-ziki",
+      inviteId: "invite-1",
+      tenantName: "Ziki",
+    });
+
+    const call = (prisma.notification.createMany as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(call.data).toEqual([expect.objectContaining({ userId: "cara", tenantId: null, kind: "tenant_invite" })]);
+  });
+
   it("stores the workspace for notifications without an issue link", async () => {
     findMany.mockResolvedValue([]);
     await deliverNotifications({

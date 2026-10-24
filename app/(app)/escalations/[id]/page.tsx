@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth-helpers";
 import { currentTenantIdFor } from "@/lib/tenant-context";
-import { ownerQuestion, classifyEscalation } from "@/lib/agent-questions";
+import { ownerQuestion, parseEscalationBody } from "@/lib/agent-questions";
 import { LocalTime } from "@/components/local-time";
 import {
   EscalationTypeBadge,
@@ -24,7 +24,8 @@ export default async function EscalationDetailPage({
   const question = await ownerQuestion(user.id, tenantId, id);
   if (!question) notFound();
 
-  const escalationType = classifyEscalation(question.body);
+  const parsed = parseEscalationBody(question.body);
+  const escalationType = parsed.type;
 
   return (
     <article className="mx-auto max-w-2xl space-y-6">
@@ -46,7 +47,7 @@ export default async function EscalationDetailPage({
             Escalation Details
           </h2>
           <p className="whitespace-pre-wrap text-sm text-slate-800 leading-relaxed bg-slate-50/60 p-4 rounded-lg border border-slate-100">
-            {question.body}
+            {parsed.cleanBody}
           </p>
         </div>
 

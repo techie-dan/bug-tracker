@@ -1,5 +1,10 @@
 import type { Prisma, PrismaClient, Severity } from "@prisma/client";
 import { pointSourceKey, solverPoints, type PointRole } from "./rules";
+import {
+  calculateSolverPoints,
+  getProjectRewardConfig,
+  type ProjectRewardConfig,
+} from "./project-rewards";
 
 /**
  * Writes points to the ledger (#428). The backfill (#435), the merge gate
@@ -30,27 +35,51 @@ export async function award(db: Db, entry: PointAward): Promise<boolean> {
 export type ResolvedIssue = {
   id: string;
   tenantId: string;
+  projectId?: string | null;
   /** The severity stored on the issue at resolution time. */
   severity: Severity;
   /** Who it was assigned to at resolution time; nobody earns points without one. */
   assigneeId: string | null;
+  rewardConfig?: ProjectRewardConfig | null;
 };
 
 /** The solver award for resolving `issue`, or null when nobody is assigned. */
 export function solverAward(issue: ResolvedIssue): PointAward | null {
   if (!issue.assigneeId) return null;
+  const points = issue.rewardConfig
+    ? calculateSolverPoints(issue.severity, issue.rewardConfig)
+    : solverPoints(issue.severity);
+
   return {
     tenantId: issue.tenantId,
     userId: issue.assigneeId,
     bugId: issue.id,
     role: "solver",
-    points: solverPoints(issue.severity),
+    points,
     sourceKey: pointSourceKey("solver", issue.id, issue.assigneeId),
   };
 }
 
 /** Awards solver points for a resolved issue, once per issue and person. */
 export async function awardSolver(db: Db, issue: ResolvedIssue): Promise<boolean> {
-  const entry = solverAward(issue);
+  if (!issue.assigneeId) return false;
+
+  let rewardConfig = issue.rewardConfig;
+  if (rewardConfig === undefined) {
+    let projectId = issue.projectId;
+    if (!projectId && "bug" in db) {
+      // Look up projectId from the issue row if not supplied
+      const bug = await (db as PrismaClient).bug.findUnique({
+        where: { id: issue.id },
+        select: { projectId: true },
+      });
+      projectId = bug?.projectId;
+    }
+    if (projectId && "project" in db) {
+      rewardConfig = await getProjectRewardConfig(db, projectId);
+    }
+  }
+
+  const entry = solverAward({ ...issue, rewardConfig });
   return entry ? award(db, entry) : false;
 }

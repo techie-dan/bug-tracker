@@ -4,7 +4,6 @@ import { watchingWhere } from "@/lib/watching";
 
 /** "Show" filter on the issues list (#152, #630), kept in the URL as `?mine=`. */
 export const MINE_FILTER_OPTIONS = [
-  "mine",
   "assigned",
   "created",
   "watching",
@@ -12,7 +11,6 @@ export const MINE_FILTER_OPTIONS = [
 export type MineFilter = (typeof MINE_FILTER_OPTIONS)[number] | "reported";
 
 export const mineFilterLabels: Record<MineFilter, string> = {
-  mine: "My issues",
   assigned: "Assigned to me",
   created: "Created by me",
   reported: "Created by me",
@@ -37,15 +35,6 @@ export function mineFilterWhere(
   if (filter === "watching") return watchingWhere(userId);
   if (filter === "assigned") return { assigneeId: userId };
   if (filter === "created" || filter === "reported") return { reporterId: userId };
-  if (filter === "mine") {
-    return {
-      AND: [
-        {
-          OR: [{ reporterId: userId }, { assigneeId: userId }],
-        },
-      ],
-    };
-  }
   return {};
 }
 

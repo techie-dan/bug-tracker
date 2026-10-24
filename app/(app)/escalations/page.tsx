@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth-helpers";
 import { currentTenantIdFor } from "@/lib/tenant-context";
-import { listOwnerQuestions, classifyEscalation, type EscalationType } from "@/lib/agent-questions";
+import { listOwnerQuestions, parseEscalationBody, type EscalationType } from "@/lib/agent-questions";
 import { LocalTime } from "@/components/local-time";
 import { EscalationTypeBadge, QuickResolveButtons } from "./escalation-controls";
 
@@ -28,11 +28,15 @@ export default async function EscalationsPage({
   const statusFilter = params.status ?? "waiting";
   const typeFilter = params.type ?? "all";
 
-  const enriched = questions.map((q) => ({
-    ...q,
-    escalationType: classifyEscalation(q.body),
-    isWaiting: !q.answeredAt,
-  }));
+  const enriched = questions.map((q) => {
+    const parsed = parseEscalationBody(q.body);
+    return {
+      ...q,
+      body: parsed.cleanBody,
+      escalationType: parsed.type,
+      isWaiting: !q.answeredAt,
+    };
+  });
 
   const pendingCount = enriched.filter((q) => q.isWaiting).length;
 

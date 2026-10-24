@@ -7,6 +7,7 @@ import { ToastProvider } from "@/components/ui/toast";
 import { cookies } from "next/headers";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { ThemePreference } from "@/components/theme-toggle";
 import { THEME_COOKIE, parseTheme, themeAttribute, type Theme } from "@/lib/theme";
 import "./globals.css";
 
@@ -23,12 +24,17 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL(getSiteUrl()),
   title: {
-    default: "Ziki Issues",
-    template: "%s · Ziki Issues",
+    default: "Ziki",
+    template: "%s · Ziki",
   },
   description: "Ziki issue tracking interface — HNG15 mini-project",
+  alternates: {
+    types: {
+      "text/plain": [{ url: "/llms.txt", title: "LLM Integration Documentation" }],
+    },
+  },
   openGraph: {
-    siteName: "Ziki Issues",
+    siteName: "Ziki",
     type: "website",
     images: [{ ...SHARE_IMAGE }],
   },
@@ -65,11 +71,7 @@ export default async function RootLayout({
   return (
     <html lang="en" data-theme={themeAttribute(theme)} suppressHydrationWarning>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("theme");if(t&&!document.documentElement.hasAttribute("data-theme")){if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`,
-          }}
-        />
+        <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Integration Documentation" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
@@ -77,10 +79,14 @@ export default async function RootLayout({
         {/*
           Both live at the root rather than in (app) so every route — including
           sign-in and the password-reset pages — can confirm and announce.
+          ThemePreference is the same choice written onto <html>, so the
+          toggle's first paint matches the server HTML.
         */}
-        <ToastProvider>
-          <ConfirmProvider>{children}</ConfirmProvider>
-        </ToastProvider>
+        <ThemePreference theme={theme}>
+          <ToastProvider>
+            <ConfirmProvider>{children}</ConfirmProvider>
+          </ToastProvider>
+        </ThemePreference>
       </body>
     </html>
   );

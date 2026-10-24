@@ -78,6 +78,22 @@ describe("GET /api/issues/similar (#284)", () => {
     expect(findMany.mock.calls[0][0].where.tenantId).toBe("tenant-zedu");
   });
 
+  it("retries trigram matching after a transient error", async () => {
+    raw
+      .mockRejectedValueOnce(new Error("temporary database error"))
+      .mockResolvedValueOnce([
+        { id: "e", number: 6, title: "Login button broken", status: "open", voteCount: 1, score: 0.9 },
+      ]);
+    findMany.mockResolvedValue([]);
+
+    expect(await (await get("Login button broken")).json()).toEqual({ issues: [] });
+    const recovered = await (await get("Login button broken")).json();
+
+    expect(recovered.issues.map((issue: { id: string }) => issue.id)).toEqual(["e"]);
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
   it("supports single-term fallback queries meeting the length threshold", async () => {
     raw.mockRejectedValue(new Error('operator does not exist: text % text'));
     findMany.mockResolvedValue([{ id: "d", number: 5, title: "Authentication fails silently", status: "open", voteCount: 3 }]);

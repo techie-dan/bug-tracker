@@ -34,12 +34,11 @@ describe("VoteButton interactive optimistic updates (#219)", () => {
         bugId="bug-1"
         voteCount={5}
         likeCount={5}
-        dislikeCount={0}
         userVote={0}
       />
     );
 
-    const upvoteButton = screen.getByRole("button", { name: /^like this issue/i });
+    const upvoteButton = screen.getByRole("button", { name: /^upvote this issue/i });
     expect(upvoteButton).toHaveTextContent("5");
 
     await user.click(upvoteButton);
@@ -64,12 +63,11 @@ describe("VoteButton interactive optimistic updates (#219)", () => {
         bugId="bug-1"
         voteCount={5}
         likeCount={5}
-        dislikeCount={0}
         userVote={0}
       />
     );
 
-    const upvoteButton = screen.getByRole("button", { name: /^like this issue/i });
+    const upvoteButton = screen.getByRole("button", { name: /^upvote this issue/i });
     expect(upvoteButton).toHaveTextContent("5");
 
     await user.click(upvoteButton);
@@ -95,19 +93,46 @@ describe("VoteButton interactive optimistic updates (#219)", () => {
         bugId="bug-1"
         voteCount={2}
         likeCount={2}
-        dislikeCount={0}
         userVote={0}
         size="md"
       />
     );
 
     const indicator = screen.getByTestId("readiness-gate-indicator");
-    expect(indicator).toHaveTextContent("Upvote (2/3 votes to unlock work)");
+    expect(indicator).toHaveTextContent("2 of 3 upvotes to unlock work");
 
-    const likeButton = screen.getByRole("button", { name: /^like, 2 likes/i });
+    // The large button's name starts with its visible "Upvote 2" (WCAG 2.5.3).
+    const likeButton = screen.getByRole("button", { name: /^upvote 2 votes/i });
     await user.click(likeButton);
 
     // Optimistically updates to 3 votes and unlocks work
-    expect(indicator).toHaveTextContent("Work unlocked (3/3 votes)");
+    expect(indicator).toHaveTextContent("Work unlocked");
+  });
+
+  it("renders accessible error with icon, 12px minimum font, and aria-describedby linkage (#703)", async () => {
+    mockToggle.mockResolvedValueOnce({
+      error: "You cannot vote on your own issue.",
+    });
+
+    const user = userEvent.setup();
+    render(
+      <VoteButton
+        bugId="bug-1"
+        voteCount={5}
+        likeCount={5}
+        userVote={0}
+      />
+    );
+
+    const upvoteButton = screen.getByRole("button", { name: /^upvote this issue/i });
+    await user.click(upvoteButton);
+
+    await waitFor(() => {
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveAttribute("id", "vote-error-bug-1");
+      expect(alert).toHaveClass("text-xs");
+      expect(alert.querySelector("svg")).toBeInTheDocument();
+      expect(upvoteButton).toHaveAttribute("aria-describedby", "vote-error-bug-1");
+    });
   });
 });

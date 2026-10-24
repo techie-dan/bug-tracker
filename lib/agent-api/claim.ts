@@ -4,9 +4,8 @@ import { IssueApiError } from "@/lib/agent-api/issues";
 
 const id = z.string().trim().min(1).max(191);
 export const claimSchema = z.object({ projectId: id.optional(), beneficiaryUserId: id.optional() }).strict();
-export const MAX_ACTIVE_CLAIMS = 2;
 
-/** Direct claims bypass fair selection and the one-minute offer, so they are gone. */
+/** Direct claims bypass fair selection and the project's offer window, so they are gone. */
 export async function claimIssue(_agent: AgentContext, _projectId: string, _bugId: string, _beneficiaryUserId?: string): Promise<never> {
   throw new IssueApiError(410, "Direct claims are gone: take a claim with POST /api/v1/issues/{id}/offer, then POST /api/v1/offers/{id}/accept. Or bid with POST /api/v1/issues/{id}/bid and let a person award it.");
 }

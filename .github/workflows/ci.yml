@@ -50,6 +50,15 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # packages/mcp-server is standalone (#612): its own dependencies and lockfile.
+      - name: MCP server (install, type check, test, build)
+        working-directory: packages/mcp-server
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
       - name: Build
         env:
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
@@ -61,7 +70,10 @@ jobs:
   # a production build and a freshly migrated, seeded database.
   e2e:
     name: End-to-end (Playwright)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is moving to 26.04, where `playwright install
+    # chromium` fails ("does not support chromium on ubuntu26.04-x64").
+    # Go back to ubuntu-latest once Playwright supports it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
@@ -83,6 +95,7 @@ jobs:
       AUTH_SECRET: "ci-e2e-secret-dummy-must-be-long-enough-32-chars"
       AUTH_URL: "http://localhost:3000/api/auth"
       NEXTAUTH_URL: "http://localhost:3000"
+      SITE_URL_ALLOW_LOOPBACK: "true"
       AUTH_TRUST_HOST: "true"
       AUTH_PASSWORD_LOGIN: "true"
       # The agent platform is on by default in production; run e2e against the

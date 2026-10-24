@@ -1,7 +1,7 @@
 /**
  * Soft @mentions stored in comment bodies as `@[Display Name](userId)`.
- * Push / in-app notifications are out of scope — mentions are persisted in
- * the comment text and highlighted on render only.
+ * Agents are mentioned as `@[Agent Name](agent:<agentId>)` (#603) so the
+ * same tag shape can address a person or one of their agents.
  */
 
 export type MentionToken =
@@ -10,6 +10,21 @@ export type MentionToken =
 
 /** Matches a complete soft-mention tag. */
 export const MENTION_TAG_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
+
+/** Id prefix that marks a mention tag as addressing an agent, not a user (#603). */
+export const AGENT_MENTION_PREFIX = "agent:";
+
+/** The id an agent's mention tag carries, e.g. `agent:clx123`. */
+export function agentMentionId(agentId: string): string {
+  return `${AGENT_MENTION_PREFIX}${agentId}`;
+}
+
+/** The agent id behind an `agent:<id>` mention id, or null for a user id. */
+export function parseAgentMentionId(id: string): string | null {
+  if (!id.startsWith(AGENT_MENTION_PREFIX)) return null;
+  const agentId = id.slice(AGENT_MENTION_PREFIX.length).trim();
+  return agentId || null;
+}
 
 export function formatMention(name: string, userId: string): string {
   const safeName = name.replace(/[\[\]]/g, "").trim() || "user";
@@ -135,16 +150,32 @@ function replaceMentionTags(
   });
 }
 
-/** Unique user ids referenced by well-formed prose mention tags in `body`.
- *  Mention tags inside fenced or inline code are excluded (#731). */
-export function extractMentionedUserIds(body: string): string[] {
+/** Unique ids (user or `agent:<id>`) in well-formed prose mention tags. */
+function extractMentionIds(body: string): string[] {
   const ids = new Set<string>();
   for (const segment of splitCodeSegments(body)) {
     if (segment.code) continue;
     for (const match of segment.value.matchAll(MENTION_TAG_RE)) {
-      const userId = match[2]?.trim();
-      if (userId) ids.add(userId);
+      const id = match[2]?.trim();
+      if (id) ids.add(id);
     }
+  }
+  return [...ids];
+}
+
+/** Unique user ids referenced by well-formed prose mention tags in `body`.
+ *  Mention tags inside fenced or inline code are excluded (#731), and so are
+ *  agent mentions (#603). */
+export function extractMentionedUserIds(body: string): string[] {
+  return extractMentionIds(body).filter((id) => parseAgentMentionId(id) === null);
+}
+
+/** Unique agent ids referenced by `@[Name](agent:<id>)` prose tags (#603). */
+export function extractMentionedAgentIds(body: string): string[] {
+  const ids = new Set<string>();
+  for (const id of extractMentionIds(body)) {
+    const agentId = parseAgentMentionId(id);
+    if (agentId) ids.add(agentId);
   }
   return [...ids];
 }
@@ -161,10 +192,20 @@ export function newlyMentionedUserIds(
   return extractMentionedUserIds(nextBody).filter((id) => !before.has(id));
 }
 
+/** Agent ids mentioned in `nextBody` but not in `previousBody` (#603). */
+export function newlyMentionedAgentIds(
+  previousBody: string,
+  nextBody: string,
+): string[] {
+  const before = new Set(extractMentionedAgentIds(previousBody));
+  return extractMentionedAgentIds(nextBody).filter((id) => !before.has(id));
+}
+
 /**
  * Verifies mentions against known users.
  * Replaces unknown user IDs with plain text `@name`.
  * Canonicalizes known user mentions to their real name from the database.
+ * Agent tags are kept only when `userMap` has their `agent:<id>` key (#603).
  */
 export function normalizeMentions(
   body: string,

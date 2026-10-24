@@ -2,6 +2,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_ATTACHMENT_BYTES } from "@/lib/attachments";
 import { MarkdownEditor } from "./markdown-editor";
 
 // Same shape the real API returns: a 25-character cuid-style id, so the
@@ -122,6 +123,57 @@ describe("MarkdownEditor upload stays inside the field limit (#732)", () => {
     expect(textarea.value).not.toContain("#upload-");
     expect(textarea.value.length).toBeLessThanOrEqual(2000);
     expect(seen.every((value) => value.length <= 2000)).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("MarkdownEditor upload rejects oversized files client-side (#540)", () => {
+  it("rejects an over-limit file before calling the upload API", async () => {
+    let fetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        fetchCalled = true;
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }),
+    );
+    const big = new File([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], "large.png", {
+      type: "image/png",
+    });
+    const { textarea } = renderEditor("", 5000);
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.assign(event, { dataTransfer: { types: ["Files"], files: [big] } });
+    act(() => {
+      textarea.dispatchEvent(event);
+    });
+
+    expect(fetchCalled).toBe(false);
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("large.png");
+    expect(alert.textContent).toContain("over the");
+    expect(textarea.value).not.toContain("#upload-");
+    expect(screen.queryByRole("alert")).not.toBeNull();
+  });
+
+  it("still uploads a file that is exactly at the limit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve({ ok: true, json: async () => PAYLOAD }),
+      ),
+    );
+    const atLimit = new File([new Uint8Array(MAX_ATTACHMENT_BYTES)], "edge.png", {
+      type: "image/png",
+    });
+    const { textarea } = renderEditor("", 5000);
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.assign(event, { dataTransfer: { types: ["Files"], files: [atLimit] } });
+    act(() => {
+      textarea.dispatchEvent(event);
+    });
+
+    // Passed the client-side size check: a placeholder was inserted and no error shown.
+    expect(textarea.value).toContain("#upload-");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

@@ -7,17 +7,17 @@ import { AppHeader } from "@/components/app-header";
 import { getUnreadCount } from "@/lib/lookups";
 import { REPORT_FORM_URL } from "@/lib/report-form";
 import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link";
+import { PAGE_CONTAINER_CLASS } from "@/components/page-container";
 import { FocusMainOnNavigate } from "@/components/focus-main-on-navigate";
 import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import { isAdmin } from "@/lib/roles";
 import { isTenantAdminRole } from "@/lib/agents/membership";
+import type { WorkspaceChoice } from "@/components/workspace-switcher";
 import { prisma } from "@/lib/prisma";
-import type { AgentKeyHint } from "@/components/agent-key-copy";
-import { ensureDefaultProjectKey } from "@/lib/agents/default-key";
-import { isAgentPlatformEnabled } from "@/lib/feature-flags";
-import { projectContextFor, type ProjectChoice } from "@/lib/project-context";
 import { currentTenantIdFor } from "@/lib/tenant-context";
+import { tenantsForUser } from "@/lib/tenants";
 import { countPendingEscalations } from "@/lib/agent-questions";
+import { pointTotals } from "@/lib/points/leaderboard";
 
 export default async function AppLayout({
   children,
@@ -33,7 +33,10 @@ export default async function AppLayout({
     if (isLinkPreviewBot(ua)) {
       return (
         <div className="flex min-h-screen flex-col bg-slate-50">
-          <main id={MAIN_CONTENT_ID} className="mx-auto w-full max-w-7xl flex-1 px-4 py-8">
+          <main
+            id={MAIN_CONTENT_ID}
+            className={`${PAGE_CONTAINER_CLASS} flex-1 py-8`}
+          >
             {children}
           </main>
         </div>
@@ -42,19 +45,19 @@ export default async function AppLayout({
   }
 
   const user = await requireUser();
-  // #426: the header switcher and the issue list read the same active project.
-  let projects: ProjectChoice[] = [];
-  let activeProjectId: string | null = null;
+  // The header lists this person's workspaces. Pages still resolve the active
+  // project inside the current workspace, so a foreign project id is ignored.
+  let workspaces: WorkspaceChoice[] = [];
+  let activeTenantId: string | null = null;
   let canManagePlatforms = false;
-  let agentKeys: AgentKeyHint[] = [];
-  let apiKey: string | null = null;
-  let keyPrefix: string | null = null;
   let tenantId: string | null = null;
   try {
     tenantId = await currentTenantIdFor(user.id);
-    const context = await projectContextFor(prisma, tenantId);
-    projects = context.projects;
-    activeProjectId = context.activeProjectId;
+    activeTenantId = tenantId;
+    const memberships = await tenantsForUser(prisma, user.id);
+    workspaces = memberships
+      .filter((tenant) => tenant.archivedAt === null)
+      .map((tenant) => ({ id: tenant.id, name: tenant.name, slug: tenant.slug }));
     if (tenantId) {
       const membership = await prisma.membership.findUnique({
         where: { tenantId_userId: { tenantId, userId: user.id } },
@@ -63,40 +66,7 @@ export default async function AppLayout({
       canManagePlatforms = isTenantAdminRole(membership?.role, user.role);
     }
   } catch (error) {
-    console.error("[layout] project context failed", error);
-  }
-  // Create this person's agent for the active project, so the header can copy its key.
-  if (tenantId && activeProjectId && isAgentPlatformEnabled()) {
-    try {
-      const personal = await ensureDefaultProjectKey({
-        userId: user.id,
-        tenantId,
-        projectId: activeProjectId,
-      });
-      if (personal) {
-        apiKey = personal.rawKey;
-        keyPrefix = personal.prefix;
-      }
-    } catch (error) {
-      console.error("[layout] default agent key failed", error);
-    }
-  }
-  if (tenantId && activeProjectId) {
-    try {
-      const keys = await prisma.agentApiKey.findMany({
-        where: {
-          revokedAt: null,
-          agent: { ownerUserId: user.id, revokedAt: null, tenantId },
-          OR: [{ projectId: activeProjectId }, { projectId: null }],
-        },
-        select: { prefix: true, project: { select: { name: true } } },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-      });
-      agentKeys = keys.map((key) => ({ prefix: key.prefix, projectName: key.project?.name ?? null }));
-    } catch (error) {
-      console.error("[layout] agent key prefixes failed", error);
-    }
+    console.error("[layout] workspace context failed", error);
   }
   // A missing Notification table must not take down every signed-in page.
   let unreadCount = 0;
@@ -109,11 +79,20 @@ export default async function AppLayout({
   }
 
   let pendingEscalationsCount = 0;
+  let points = 0;
+  let solvedTasks = 0;
   if (tenantId) {
     try {
       pendingEscalationsCount = await countPendingEscalations(user.id, tenantId);
     } catch (error) {
       console.error("[layout] pending escalations count failed", error);
+    }
+    try {
+      const totals = await pointTotals(prisma, tenantId, user.id);
+      points = totals.points;
+      solvedTasks = totals.solvedTasks;
+    } catch (error) {
+      console.error("[layout] points failed", error);
     }
   }
 
@@ -141,19 +120,18 @@ export default async function AppLayout({
         unreadCount={unreadCount}
         pendingEscalationsCount={pendingEscalationsCount}
         userId={user.id}
-        projects={projects}
-        activeProjectId={activeProjectId}
+        workspaces={workspaces}
+        activeTenantId={activeTenantId}
         canManagePlatforms={canManagePlatforms}
-        agentKeys={agentKeys}
-        apiKey={apiKey}
-        keyPrefix={keyPrefix}
+        points={points}
+        solvedTasks={solvedTasks}
       />
       <main
         id={MAIN_CONTENT_ID}
         /* Focusable so the skip link and the route announcer can move focus
            here; -1 keeps it out of the normal tab order. */
         tabIndex={-1}
-        className={`outline-none mx-auto w-full max-w-7xl flex-1 px-3.5 pt-5 sm:px-4 sm:pt-8 ${
+        className={`outline-none ${PAGE_CONTAINER_CLASS} flex-1 pt-5 sm:pt-8 ${
           // #221: the fixed FAB sits over the bottom-right of the viewport and
           // was covering pagination "Next" and the Danger-zone Delete button.
           // Reserve clearance only when the FAB actually renders, so we don't

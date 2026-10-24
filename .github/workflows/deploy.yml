@@ -1,20 +1,20 @@
 name: Deploy (Coolify)
 
-# Runs only after the CI workflow finishes successfully on a push to main,
+# Runs only after the CI workflow finishes successfully on a push to main (production) or staging,
 # and verifies that Malware Scan (CI Gate) has also succeeded on the same commit.
 # Never deploys when either workflow fails or is skipped.
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-    branches: [main]
+    branches: [main, staging]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: deploy-${{ github.repository }}
+  group: deploy-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
@@ -31,6 +31,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           echo "Verifying Malware Scan (CI Gate) for commit $HEAD_SHA in $GH_REPO..."
@@ -38,7 +39,7 @@ jobs:
           ELAPSED=0
           TIMEOUT=600
           while true; do
-            STATUS=$(gh run list --repo "$GH_REPO" --commit "$HEAD_SHA" --branch main --event push --workflow "Malware Scan (CI Gate)" --json status,conclusion --jq '.[0] // empty')
+            STATUS=$(gh run list --repo "$GH_REPO" --commit "$HEAD_SHA" --branch "$HEAD_BRANCH" --event push --workflow "Malware Scan (CI Gate)" --json status,conclusion --jq '.[0] // empty')
             if [[ -n "$STATUS" ]]; then
               RUN_STATUS=$(echo "$STATUS" | jq -r '.status')
               RUN_CONCLUSION=$(echo "$STATUS" | jq -r '.conclusion')
@@ -68,12 +69,13 @@ jobs:
       - name: Trigger Coolify deployment
         shell: bash
         env:
-          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          # main -> production app, staging -> staging app
+          COOLIFY_WEBHOOK_URL: ${{ github.event.workflow_run.head_branch == 'staging' && secrets.COOLIFY_STAGING_WEBHOOK_URL || secrets.COOLIFY_WEBHOOK_URL }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
         run: |
           set -uo pipefail
           if [[ -z "${COOLIFY_WEBHOOK_URL:-}" ]]; then
-            echo "COOLIFY_WEBHOOK_URL secret is not set"; exit 1
+            echo "Coolify webhook URL secret is not set for ${{ github.event.workflow_run.head_branch }}"; exit 1
           fi
           # Safe to log: scheme, host and path only (no query string, no token)
           echo "Calling: ${COOLIFY_WEBHOOK_URL%%\?*}"

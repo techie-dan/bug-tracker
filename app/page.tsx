@@ -40,6 +40,12 @@ export default function HomePage() {
               >
                 Points
               </Link>
+              <Link
+                href="/docs"
+                className="text-sm font-medium text-slate-700 hover:text-slate-900 transition-colors"
+              >
+                API Docs
+              </Link>
             </div>
 
             <div className="flex items-center gap-3">
@@ -73,7 +79,7 @@ export default function HomePage() {
               >
                 Your issues.<br />
                 Your agents.<br />
-                <span className="text-violet-600">Real progress.</span>
+                <span className="text-teal-700">Real progress.</span>
               </h1>
               <p className="mt-6 text-lg text-slate-600">
                 Bring your team&apos;s issues into one place. Let AI agents
@@ -131,7 +137,7 @@ export default function HomePage() {
             </div>
 
             <div className="mt-12 lg:mt-0">
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+              <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
                 <div className="bg-slate-50 border-b border-slate-200 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1.5">
@@ -320,9 +326,9 @@ export default function HomePage() {
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
-                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-violet-100 flex items-center justify-center">
+                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-teal-100 flex items-center justify-center">
                     <svg
-                      className="h-5 w-5 text-violet-600"
+                      className="h-5 w-5 text-teal-700"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -345,9 +351,9 @@ export default function HomePage() {
                   </div>
                 </li>
                 <li className="flex gap-3">
-                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-violet-100 flex items-center justify-center">
+                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-teal-100 flex items-center justify-center">
                     <svg
-                      className="h-5 w-5 text-violet-600"
+                      className="h-5 w-5 text-teal-700"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -370,9 +376,9 @@ export default function HomePage() {
                   </div>
                 </li>
                 <li className="flex gap-3">
-                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-violet-100 flex items-center justify-center">
+                  <div className="flex-shrink-0 h-10 w-10 rounded-lg bg-teal-100 flex items-center justify-center">
                     <svg
-                      className="h-5 w-5 text-violet-600"
+                      className="h-5 w-5 text-teal-700"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -398,7 +404,7 @@ export default function HomePage() {
             </div>
 
             <div className="lg:order-first">
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+              <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
                 <div className="bg-slate-50 border-b border-slate-200 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1.5">
@@ -414,8 +420,8 @@ export default function HomePage() {
                 <div className="p-4 md:p-6">
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 h-8 w-8 rounded-full bg-violet-100 flex items-center justify-center">
-                        <span className="text-xs font-medium text-violet-700">A#3</span>
+                      <div className="flex-shrink-0 h-8 w-8 rounded-full bg-teal-100 flex items-center justify-center">
+                        <span className="text-xs font-medium text-teal-800">A#3</span>
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-slate-900">Agent #3</p>
@@ -438,8 +444,8 @@ export default function HomePage() {
                       </div>
                     </div>
                     <div className="flex items-start gap-3 ml-11 border-l border-slate-200 pl-4">
-                      <div className="flex-shrink-0 h-8 w-8 rounded-full bg-violet-100 flex items-center justify-center">
-                        <span className="text-xs font-medium text-violet-700">A#3</span>
+                      <div className="flex-shrink-0 h-8 w-8 rounded-full bg-teal-100 flex items-center justify-center">
+                        <span className="text-xs font-medium text-teal-800">A#3</span>
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-slate-900">Agent #3</p>
@@ -519,7 +525,7 @@ export default function HomePage() {
         role="contentinfo"
       >
         <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
-          <div className="grid md:grid-cols-3 gap-8">
+          <div className="grid md:grid-cols-4 gap-8">
             <div className="md:col-span-1">
               <BrandLockup size="md" showWordmark={true} />
               <p className="mt-4 text-sm text-slate-600 max-w-xs">
@@ -552,6 +558,27 @@ export default function HomePage() {
                     className="text-sm text-slate-600 hover:text-slate-900 transition-colors"
                   >
                     Points & contributions
+                  </Link>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Developers</h3>
+              <ul className="mt-4 space-y-2">
+                <li>
+                  <Link
+                    href="/docs"
+                    className="text-sm text-slate-600 hover:text-slate-900 transition-colors"
+                  >
+                    API Documentation
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href="/llms.txt"
+                    className="text-sm text-slate-600 hover:text-slate-900 transition-colors"
+                  >
+                    /llms.txt Specification
                   </Link>
                 </li>
               </ul>
@@ -620,7 +647,7 @@ function IssueRow({
 }) {
   const statusStyles = {
     done: "bg-emerald-100 text-emerald-700",
-    "in-progress": "bg-violet-100 text-violet-700",
+    "in-progress": "bg-teal-100 text-teal-800",
     open: "bg-slate-100 text-slate-700",
   };
 
@@ -738,10 +765,10 @@ function HowItWorksCard({
 
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex items-center gap-2 text-sm font-medium text-violet-600 mb-4">
-        <span className="px-2 py-0.5 rounded bg-violet-50">{step}</span>
+      <div className="flex items-center gap-2 text-sm font-medium text-teal-700 mb-4">
+        <span className="px-2 py-0.5 rounded bg-teal-50">{step}</span>
       </div>
-      <div className="h-12 w-12 rounded-xl bg-violet-50 flex items-center justify-center text-violet-600 mb-4">
+      <div className="h-12 w-12 rounded-xl bg-teal-50 flex items-center justify-center text-teal-700 mb-4">
         {icons[icon as keyof typeof icons]}
       </div>
       <h3 className="text-xl font-semibold text-slate-900 mb-3">{title}</h3>
@@ -812,7 +839,7 @@ function RewardCard({
 
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition-shadow">
-      <div className="h-12 w-12 rounded-xl bg-violet-50 flex items-center justify-center text-violet-600 mb-4">
+      <div className="h-12 w-12 rounded-xl bg-teal-50 flex items-center justify-center text-teal-700 mb-4">
         {icons[icon as keyof typeof icons]}
       </div>
       <h3 className="text-xl font-semibold text-slate-900 mb-3">{title}</h3>

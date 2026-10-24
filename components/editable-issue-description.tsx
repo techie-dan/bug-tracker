@@ -22,6 +22,8 @@ export type EditableIssueDescriptionProps = {
   /** When the title or description was last edited (#303); null if never. */
   lastEditedAt?: Date | null;
   historyHref?: string;
+  /** When the issue was created (#422); shown on the heading row. */
+  createdAt?: Date | string | null;
 };
 
 export function EditableIssueDescription({
@@ -33,6 +35,7 @@ export function EditableIssueDescription({
   children,
   lastEditedAt = null,
   historyHref,
+  createdAt = null,
 }: EditableIssueDescriptionProps) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -80,7 +83,7 @@ export function EditableIssueDescription({
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
             {isEditing ? "Edit issue" : "Description"}
@@ -94,15 +97,23 @@ export function EditableIssueDescription({
             </p>
           ) : null}
         </div>
-        {canEdit && !isEditing ? (
-          <Button
-            variant="ghost"
-            className="px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900"
-            onClick={handleStartEdit}
-          >
-            Edit
-          </Button>
-        ) : null}
+        <div className="ml-auto flex items-center gap-2">
+          {!isEditing && createdAt ? (
+            <p className="text-xs text-slate-500">
+              <span className="sr-only">Created </span>
+              <LocalTime date={createdAt} />
+            </p>
+          ) : null}
+          {canEdit && !isEditing ? (
+            <Button
+              variant="ghost"
+              className="px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900"
+              onClick={handleStartEdit}
+            >
+              Edit
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {isEditing ? (
@@ -183,7 +194,7 @@ export function EditableIssueDescription({
           </div>
         </form>
       ) : (
-        <div className="mt-2">
+        <div className="mt-2 max-w-3xl">
           <ExpandableText maxLines={6} expandText="View more" collapseText="View less">
             <RichText
               content={initialDescription}

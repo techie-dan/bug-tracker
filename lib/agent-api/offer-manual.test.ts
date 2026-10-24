@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IssueApiError } from "@/lib/agent-api/issues";
 
 const db = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
@@ -59,5 +60,36 @@ describe("manual issue offers (#590)", () => {
     expect(db.issueClaim.create).not.toHaveBeenCalled();
     expect(db.issueClaim.update).not.toHaveBeenCalled();
     expect(notifyClaimOffered).not.toHaveBeenCalled();
+  });  it("blocks with 409 waiting_for_human when human approval is required before offer (#598)", async () => {
+    (db as Record<string, unknown>).approvalRule = {
+      findMany: vi.fn(async () => [
+        { id: "rule-1", stage: "before_offer", issueTypeId: null, severity: null, fileGlob: null },
+      ]),
+    };
+    (db as Record<string, unknown>).issueApproval = {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: "appr-wait", status: "pending" })),
+    };
+    (db as Record<string, unknown>).membership = {
+      findMany: vi.fn(async () => []),
+    };
+    (db as Record<string, unknown>).agentEvent = {
+      create: vi.fn(async () => ({ id: "event-1" })),
+    };
+    (db as Record<string, unknown>).webhookSubscription = {
+      findMany: vi.fn(async () => []),
+    };
+
+    let error: IssueApiError | null = null;
+    try {
+      await offerIssue(agent, "project-1", "bug-1");
+    } catch (e) {
+      error = e as IssueApiError;
+    }
+
+    expect(error).toBeInstanceOf(IssueApiError);
+    expect(error?.status).toBe(409);
+    expect(error?.message).toBe("waiting_for_human");
+    expect(error?.body).toEqual({ approvalId: "appr-wait" });
   });
 });

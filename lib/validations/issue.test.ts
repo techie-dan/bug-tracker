@@ -485,7 +485,7 @@ describe("createBugSchema proofLinks", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe(
-        "You entered 24 links. At most 20 proof links are allowed.",
+        "You entered 24 links. At most 20 GitHub PR links are allowed.",
       );
     }
   });

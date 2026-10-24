@@ -235,12 +235,12 @@ export function CategoryManager({
                 >
                   <div className="flex flex-1 items-center gap-3">
                     {isEditing ? (
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Input
                           id={`rename-platform-${cat.id}`}
                           value={editingName}
                           onChange={(e) => setEditingName(e.target.value)}
-                          className="h-8 w-48 text-sm"
+                          className="h-11 w-48 text-sm sm:h-8"
                           disabled={pending}
                           // Focus the field the user just opened for renaming;
                           // this is not a page-load autofocus.
@@ -253,14 +253,14 @@ export function CategoryManager({
                           {...invalidAttrs(`rename-platform-${cat.id}`)}
                         />
                         <Button
-                          className="px-2.5 py-1 text-xs"
+                          className="min-h-11 px-3 text-xs sm:min-h-0 sm:px-2.5 sm:py-1"
                           onClick={() => handleSaveEdit(cat.id)}
                           disabled={pending || !editingName.trim()}
                         >
                           Save
                         </Button>
                         <Button
-                          className="px-2.5 py-1 text-xs"
+                          className="min-h-11 px-3 text-xs sm:min-h-0 sm:px-2.5 sm:py-1"
                           variant="ghost"
                           onClick={() => setEditingId(null)}
                           disabled={pending}
@@ -286,14 +286,21 @@ export function CategoryManager({
                     )}
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  {/*
+                    #694: the action cluster never wrapped, so on a 360px phone
+                    the row overflowed the card's `overflow-hidden` and Delete
+                    was clipped and unreachable. Wrap it instead (the same fix
+                    as milestone-manager), and give the buttons a 44px touch
+                    target on phones while keeping the compact desktop size.
+                  */}
+                  <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                     <span className="text-xs text-slate-600">
                       {cat._count.bugs} issue{cat._count.bugs === 1 ? "" : "s"}
                     </span>
 
                     {!isEditing ? (
                       <Button
-                        className="px-2.5 py-1 text-xs"
+                        className="min-h-11 px-3 text-xs sm:min-h-0 sm:px-2.5 sm:py-1"
                         variant="ghost"
                         onClick={() => handleStartEdit(cat)}
                         disabled={pending}
@@ -303,7 +310,7 @@ export function CategoryManager({
                     ) : null}
 
                     <Button
-                      className="px-2.5 py-1 text-xs"
+                      className="min-h-11 px-3 text-xs sm:min-h-0 sm:px-2.5 sm:py-1"
                       variant="secondary"
                       onClick={() => handleToggle(cat.id)}
                       disabled={pending}
@@ -317,7 +324,7 @@ export function CategoryManager({
                       question. Clicking it explains instead of deleting.
                     */}
                     <Button
-                      className={`px-2.5 py-1 text-xs ${
+                      className={`min-h-11 px-3 text-xs sm:min-h-0 sm:px-2.5 sm:py-1 ${
                         cat._count.bugs > 0
                           ? "text-slate-600 hover:bg-slate-100"
                           : "text-red-600 hover:bg-red-50 hover:text-red-700"

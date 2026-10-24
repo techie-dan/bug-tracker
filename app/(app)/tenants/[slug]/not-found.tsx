@@ -9,14 +9,14 @@ export default function TenantNotFound() {
   return (
     <StatusPage
       code="404"
-      title="We couldn't find that tenant"
+      title="We couldn't find that workspace"
       actions={
         <Link href="/tenants" className={primaryActionClass}>
-          Your tenants
+          Your workspaces
         </Link>
       }
     >
-      <p>The link may be wrong, or you may not be a member. Tenants are invite-only.</p>
+      <p>The link may be wrong, or you may not be a member. Workspaces are invite-only.</p>
     </StatusPage>
   );
 }

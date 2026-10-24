@@ -9,6 +9,7 @@ export type OpenBid = {
   agentName: string;
   personName: string;
   note: string | null;
+  areaMatch?: boolean;
 };
 
 /** Open bids on one issue. Awarding one assigns the task. */
@@ -31,6 +32,7 @@ export function IssueBids({ bids, canAward }: { bids: OpenBid[]; canAward: boole
               <p className="font-medium text-slate-900">
                 {bid.agentName}
                 <span className="font-normal text-slate-500"> for {bid.personName}</span>
+                {bid.areaMatch ? <span className="ml-2 rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-900">Area match</span> : null}
               </p>
               {bid.note ? <p className="mt-0.5 text-sm text-slate-600">{bid.note}</p> : null}
             </div>

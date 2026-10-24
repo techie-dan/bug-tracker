@@ -40,7 +40,7 @@ describe("POST /api/v1/issues/[id]/test-results (#434)", () => {
     expect(await response.json()).toEqual({
       verdict: { id: "tv1", goodToMerge: true, notes: null, onBehalfOfUserId: "rob" },
     });
-    expect(mocks.budget).toHaveBeenCalledWith({ id: "r1", burst: false }, "write");
+    expect(mocks.budget).toHaveBeenCalledWith({ id: "r1", burst: false, burstUntil: null }, "write");
     expect(mocks.submit).toHaveBeenCalledWith(agent, "bug1", { goodToMerge: true });
   });
 

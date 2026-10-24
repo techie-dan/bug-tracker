@@ -79,7 +79,7 @@ describe("GET /api/v1/agents/me/points (#618)", () => {
       tenantId: "tenant-zedu",
       userId: "ada",
     });
-    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false }, "read");
+    expect(budget).toHaveBeenCalledWith({ id: "agent-a", burst: false, burstUntil: null }, "read");
     expect(db.agentAuditEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ action: "points.balance", tenantId: "tenant-zedu" }),
     });

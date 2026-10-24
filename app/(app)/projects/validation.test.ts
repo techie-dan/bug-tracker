@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   nextProjectSlug,
+  projectAreaSchema,
   PROJECT_SLUG_MAX,
   projectNameSchema,
   projectSettingsSchema,
@@ -31,6 +32,34 @@ describe("projectSettingsSchema (#608)", () => {
     expect(projectSettingsSchema.safeParse({ ...valid, repoUrl: "https://github.com/acme" }).success).toBe(false);
     expect(projectSettingsSchema.safeParse({ ...valid, stagingUrl: "http://staging.acme.test" }).success).toBe(false);
     expect(projectSettingsSchema.safeParse({ ...valid, goal: "x".repeat(4001) }).success).toBe(false);
+  });
+});
+
+describe("projectAreaSchema (#609)", () => {
+  it("trims area fields and deduplicates path patterns", () => {
+    expect(projectAreaSchema.parse({
+      name: "  Frontend ",
+      description: "  Owns the web UI  ",
+      paths: " apps/web/**\n\n apps/web/** ",
+    })).toEqual({
+      name: "Frontend",
+      description: "Owns the web UI",
+      paths: ["apps/web/**"],
+    });
+  });
+
+  it("clears blank optional fields", () => {
+    expect(projectAreaSchema.parse({ name: "Backend", description: "  ", paths: "  " })).toEqual({
+      name: "Backend",
+      description: null,
+      paths: [],
+    });
+  });
+
+  it("rejects invalid names, parent paths, and too many patterns", () => {
+    expect(projectAreaSchema.safeParse({ name: "x", description: "", paths: "" }).success).toBe(false);
+    expect(projectAreaSchema.safeParse({ name: "Web", description: "", paths: "../secrets/**" }).success).toBe(false);
+    expect(projectAreaSchema.safeParse({ name: "Web", description: "", paths: Array.from({ length: 26 }, (_, i) => `src/${i}/**`).join("\n") }).success).toBe(false);
   });
 });
 
